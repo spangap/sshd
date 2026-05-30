@@ -1,0 +1,18 @@
+# sshd — minimal SSH server for spangap.
+#
+# Curve25519 KEX + Ed25519 host/user keys + ChaCha20-Poly1305 only.
+# Hard-wired to two destinations: shell channel → cli, `subsystem log` → log.
+# No port forwarding, no exec, no SFTP, no rekey.
+schema_version: 1
+name: spangap/sshd
+prefix: sshd
+version: 0.1.0
+firmware: esp-idf
+browser: browser
+platforms: [idf]
+requires:
+  - spangap/spangap-net
+optional_requires:
+  # sshd.cpp registers a Settings pane via lcdSetting* helpers,
+  # gated on CONFIG_SPANGAP_LCD.
+  - spangap/spangap-lcd
