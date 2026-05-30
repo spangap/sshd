@@ -27,6 +27,21 @@ extern "C" {
 #include "ed25519.h"
 }
 
+/* Vendored mlkem-native (Apache-2.0 OR ISC OR MIT — see mlkem_native/LICENSE).
+ * Configured for MLKEM-768 only; public API is the standard NIST KEM names
+ * (crypto_kem_enc, etc.), aliased onto PQCP_MLKEM_NATIVE_MLKEM768_* symbols. */
+extern "C" {
+#include "mlkem_native.h"
+
+/* mlkem-native requires the embedder to provide randombytes(). Forward to
+ * esp_fill_random(), which is a CSPRNG seeded by hardware once Wi-Fi/BT is
+ * up. Returns 0 on success. */
+int randombytes(uint8_t* out, size_t outLen) {
+    esp_fill_random(out, outLen);
+    return 0;
+}
+}
+
 namespace sshdcrypto {
 
 static int esp_fill_random_wrapper(void* /*ctx*/, unsigned char* buf, size_t len) {
@@ -134,6 +149,17 @@ bool x25519_base(const uint8_t scalar[32], uint8_t out[32]) {
 }
 bool x25519_scalar(const uint8_t scalar[32], const uint8_t point[32], uint8_t out[32]) {
     return x25519_compute(scalar, point, out);
+}
+
+/* ---------------- ML-KEM-768 (mlkem-native) ---------------- */
+
+bool mlkem768_encap(const uint8_t pk[MLKEM768_PK_BYTES],
+                    uint8_t ct[MLKEM768_CT_BYTES],
+                    uint8_t ss[MLKEM768_SS_BYTES]) {
+    /* crypto_kem_enc is the namespaced ML-KEM-768 encapsulation. Returns
+     * 0 on success, MLK_ERR_FAIL on pk modulus-check rejection, or
+     * MLK_ERR_RNG_FAIL if randombytes() fails (it won't, for us). */
+    return crypto_kem_enc(ct, ss, pk) == 0;
 }
 
 /* ---------------- Ed25519 (orlp/ed25519, vendored) ---------------- */

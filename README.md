@@ -18,7 +18,8 @@ flags needed.
 
 | | |
 | --- | --- |
-| KEX                  | `curve25519-sha256`, `curve25519-sha256@libssh.org` |
+| KEX (preferred)      | `mlkem768x25519-sha256` (post-quantum hybrid, FIPS 203) |
+| KEX (fallback)       | `curve25519-sha256`, `curve25519-sha256@libssh.org` |
 | Host key + user auth | `ssh-ed25519` |
 | Cipher (AEAD)        | `chacha20-poly1305@openssh.com` |
 | MAC                  | implicit (Poly1305) |
@@ -28,7 +29,16 @@ No RSA, no DH groups, no AES, no SHA-1, no HMAC-SHA*. The host's flash and
 RAM footprint are sized accordingly: Ed25519 is vendored from
 [orlp/ed25519](https://github.com/orlp/ed25519) (zlib license; see
 `src/orlp_ed25519/LICENSE.txt`) because IDF's mbedTLS does not ship it;
+ML-KEM-768 is vendored from
+[pq-code-package/mlkem-native](https://github.com/pq-code-package/mlkem-native)
+(Apache-2.0 / ISC / MIT tri-licensed; see `src/mlkem_native/LICENSE` and
+`src/mlkem_native/VENDORED.md`) because it isn't part of mbedTLS either;
 ChaCha20-Poly1305 and X25519 come from the platform's existing mbedTLS.
+
+OpenSSH 10 clients warn ("connection is not using a post-quantum key
+exchange algorithm") whenever the negotiated KEX is classical. Advertising
+`mlkem768x25519-sha256` first means that warning stays silent for any
+client ≥ 9.9.
 
 ## How a session works
 

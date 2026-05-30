@@ -37,6 +37,23 @@ bool x25519_base(const uint8_t scalar[32], uint8_t out[32]);
 /** Compute scalar*point into out. */
 bool x25519_scalar(const uint8_t scalar[32], const uint8_t point[32], uint8_t out[32]);
 
+/* ---- ML-KEM-768 (FIPS 203) ----
+ *
+ * We only need encapsulation server-side: in mlkem768x25519-sha256 the client
+ * sends its ML-KEM public key in KEX_ECDH_INIT and the server returns a
+ * ciphertext in KEX_ECDH_REPLY. Keypair generation and decapsulation are not
+ * needed on the device. */
+
+constexpr size_t MLKEM768_PK_BYTES = 1184;
+constexpr size_t MLKEM768_CT_BYTES = 1088;
+constexpr size_t MLKEM768_SS_BYTES = 32;
+
+/** Encapsulate against `pk`; on success writes `ct` (1088 bytes) and `ss`
+ *  (32 bytes). Returns false on RNG failure or pk modulus-check rejection. */
+bool mlkem768_encap(const uint8_t pk[MLKEM768_PK_BYTES],
+                    uint8_t ct[MLKEM768_CT_BYTES],
+                    uint8_t ss[MLKEM768_SS_BYTES]);
+
 /* ---- Ed25519 (RFC 8032) ---- */
 /** Derive the 32-byte Ed25519 public key from a 32-byte seed. */
 bool ed25519_pub_from_seed(const uint8_t seed[32], uint8_t pub[32]);

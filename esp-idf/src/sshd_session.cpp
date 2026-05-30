@@ -76,11 +76,14 @@ void Session::reset() {
     rxBuf.clear();
     peerVersion.clear();
     ourVersion.clear();
+    kexAlg = KexAlg::CURVE25519_SHA256;
     peerKexInit.clear();
     ourKexInit.clear();
     memset(ephPriv, 0, sizeof(ephPriv));
     memset(ephPub, 0, sizeof(ephPub));
     memset(peerEphPub, 0, sizeof(peerEphPub));
+    peerKexBlob.clear();
+    ourKexBlob.clear();
     memset(sharedK, 0, sizeof(sharedK));
     memset(sessionId, 0, sizeof(sessionId));
     haveSessionId = false;
@@ -196,8 +199,43 @@ static std::string build_host_key_blob(const uint8_t pub[32]) {
     return b;
 }
 
+/* Append `K` to a hash in the encoding required by the negotiated KEX.
+ *
+ * Classical curve25519-sha256: K is the raw 32-byte X25519 result, encoded
+ * as `mpint` (RFC 4251 §5): MSB-set values get a 0x00 prefix; leading zero
+ * bytes are stripped.
+ *
+ * PQ mlkem768x25519-sha256: K is *already* the SHA-256 of the concatenated
+ * KEM and ECDH shared secrets, and per the draft (and OpenSSH's
+ * kexmlkem768x25519.c reference) it is encoded as an ssh-`string` — just
+ * 4-byte length prefix (always 32) + 32 bytes, no mpint sign handling. */
+static void hash_update_K(sshdcrypto::Sha256& h, const Session& s) {
+    if (s.kexAlg == KexAlg::MLKEM768_X25519) {
+        uint8_t lenBE[4] = { 0, 0, 0, 32 };
+        h.update(lenBE, 4);
+        h.update(s.sharedK, 32);
+        return;
+    }
+    /* mpint(K) */
+    const uint8_t* k = s.sharedK;
+    size_t n = 32;
+    while (n > 1 && k[0] == 0) { k++; n--; }
+    bool pad = (n > 0 && (k[0] & 0x80) != 0);
+    uint32_t mpLen = (uint32_t)(n + (pad ? 1 : 0));
+    uint8_t lenBE[4] = {
+        (uint8_t)(mpLen >> 24), (uint8_t)(mpLen >> 16),
+        (uint8_t)(mpLen >> 8),  (uint8_t)mpLen };
+    h.update(lenBE, 4);
+    if (pad) { uint8_t z = 0; h.update(&z, 1); }
+    h.update(k, n);
+}
+
 /* Compute H = SHA256(string(V_C) || string(V_S) || string(I_C) || string(I_S)
- *                    || string(K_S) || string(Q_C) || string(Q_S) || mpint(K)) */
+ *                    || string(K_S) || string(Q_C) || string(Q_S) || K_enc)
+ *
+ * Classical: Q_C = peerEphPub(32), Q_S = ephPub(32).
+ * PQ:        Q_C = peerKexBlob (1216 bytes), Q_S = ourKexBlob (1120 bytes).
+ * K_enc differs per hash_update_K. */
 static void compute_exchange_hash(Session& s, const std::string& kBlob,
                                   uint8_t H[32]) {
     sshdcrypto::Sha256 h;
@@ -212,22 +250,14 @@ static void compute_exchange_hash(Session& s, const std::string& kBlob,
     putString(s.peerKexInit.data(),  s.peerKexInit.size());
     putString(s.ourKexInit.data(),   s.ourKexInit.size());
     putString(kBlob.data(),          kBlob.size());
-    putString(s.peerEphPub,          32);
-    putString(s.ephPub,              32);
-    /* mpint(K): may need 0x00 prepend if MSB set. */
-    {
-        const uint8_t* k = s.sharedK;
-        size_t n = 32;
-        while (n > 1 && k[0] == 0) { k++; n--; }
-        bool pad = (n > 0 && (k[0] & 0x80) != 0);
-        uint32_t mpLen = (uint32_t)(n + (pad ? 1 : 0));
-        uint8_t lenBE[4] = {
-            (uint8_t)(mpLen >> 24), (uint8_t)(mpLen >> 16),
-            (uint8_t)(mpLen >> 8),  (uint8_t)mpLen };
-        h.update(lenBE, 4);
-        if (pad) { uint8_t z = 0; h.update(&z, 1); }
-        h.update(k, n);
+    if (s.kexAlg == KexAlg::MLKEM768_X25519) {
+        putString(s.peerKexBlob.data(), s.peerKexBlob.size());
+        putString(s.ourKexBlob.data(),  s.ourKexBlob.size());
+    } else {
+        putString(s.peerEphPub, 32);
+        putString(s.ephPub,     32);
     }
+    hash_update_K(h, s);
     h.finish(H);
 }
 
@@ -235,30 +265,17 @@ static void compute_exchange_hash(Session& s, const std::string& kBlob,
  *   K1 = HASH(K || H || X || session_id)
  *   K2 = HASH(K || H || K1)
  *   K3 = HASH(K || H || K1 || K2) ...
- *   key = K1 || K2 || K3 || ... truncated to outLen */
+ *   key = K1 || K2 || K3 || ... truncated to outLen
+ *
+ * K's encoding follows hash_update_K — mpint for classical, ssh-string for PQ. */
 static void derive_key(Session& s, char letter, uint8_t* out, size_t outLen) {
-    /* K is sharedK as mpint; H is sessionId; session_id is also sessionId
-     * (this is the first KEX, so H == session_id). */
-    auto mpintK = [&](sshdcrypto::Sha256& h) {
-        const uint8_t* k = s.sharedK;
-        size_t n = 32;
-        while (n > 1 && k[0] == 0) { k++; n--; }
-        bool pad = (n > 0 && (k[0] & 0x80) != 0);
-        uint32_t mpLen = (uint32_t)(n + (pad ? 1 : 0));
-        uint8_t lenBE[4] = {
-            (uint8_t)(mpLen >> 24), (uint8_t)(mpLen >> 16),
-            (uint8_t)(mpLen >> 8),  (uint8_t)mpLen };
-        h.update(lenBE, 4);
-        if (pad) { uint8_t z = 0; h.update(&z, 1); }
-        h.update(k, n);
-    };
-
+    /* This is always the first KEX in our state machine, so H == session_id. */
     uint8_t prev[32];
     size_t produced = 0;
     bool first = true;
     while (produced < outLen) {
         sshdcrypto::Sha256 h;
-        mpintK(h);
+        hash_update_K(h, s);
         h.update(s.sessionId, 32);
         if (first) {
             uint8_t l = (uint8_t)letter;
@@ -277,6 +294,12 @@ static void derive_key(Session& s, char letter, uint8_t* out, size_t outLen) {
 
 /* ---- KEXINIT builder ---- */
 
+/* Our KEX preference order. mlkem768x25519-sha256 first so any OpenSSH 9.9+
+ * client picks it (and OpenSSH 10's "not using post-quantum KEX" warning
+ * stays silent). curve25519-sha256 remains as fallback for older clients. */
+static constexpr const char* OUR_KEX_NAMES =
+    "mlkem768x25519-sha256,curve25519-sha256,curve25519-sha256@libssh.org";
+
 static void build_kexinit_payload(std::string& out) {
     put_u8(out, MSG_KEXINIT);
     /* 16-byte cookie */
@@ -284,7 +307,7 @@ static void build_kexinit_payload(std::string& out) {
     esp_fill_random(cookie, 16);
     out.append((const char*)cookie, 16);
     /* algorithm name-lists */
-    put_namelist(out, "curve25519-sha256,curve25519-sha256@libssh.org");
+    put_namelist(out, OUR_KEX_NAMES);
     put_namelist(out, "ssh-ed25519");
     put_namelist(out, "chacha20-poly1305@openssh.com");
     put_namelist(out, "chacha20-poly1305@openssh.com");
@@ -296,6 +319,46 @@ static void build_kexinit_payload(std::string& out) {
     put_namelist(out, "");      /* lang s2c */
     put_u8(out, 0);             /* first_kex_packet_follows */
     put_u32(out, 0);            /* reserved */
+}
+
+/* True if `needle` (a single name) appears in the comma-separated `csv`. */
+static bool name_in_csv(const char* needle, const uint8_t* csv, size_t csvLen) {
+    size_t needleLen = strlen(needle);
+    size_t i = 0;
+    while (i < csvLen) {
+        size_t j = i;
+        while (j < csvLen && csv[j] != ',') j++;
+        if (j - i == needleLen && memcmp(csv + i, needle, needleLen) == 0) return true;
+        i = j + 1;
+    }
+    return false;
+}
+
+/* Pick a KEX algorithm by intersecting the peer's KEXINIT name-list (the
+ * first name-list after the 16-byte cookie in the payload, with the leading
+ * msg_type byte already accounted for) against our preference order. Returns
+ * true on success. */
+static bool select_kex_alg(const std::string& peerKexInitPayload, KexAlg& out) {
+    /* Skip msg_type (1) + cookie (16), then read the kex name-list. */
+    if (peerKexInitPayload.size() < 17 + 4) return false;
+    View v = view_init(peerKexInitPayload.data() + 17,
+                       peerKexInitPayload.size() - 17);
+    const uint8_t* list; size_t listLen;
+    if (!get_string(v, &list, &listLen)) return false;
+
+    /* Server preference order is authoritative (RFC 4253 §7.1: "the first
+     * algorithm on the client's list that is also on the server's name-list").
+     * That is the client's preference, but we get the same result by walking
+     * our preference order and picking the first one present in the peer's
+     * list — and we set our order intentionally. */
+    if (name_in_csv("mlkem768x25519-sha256", list, listLen)) {
+        out = KexAlg::MLKEM768_X25519; return true;
+    }
+    if (name_in_csv("curve25519-sha256", list, listLen) ||
+        name_in_csv("curve25519-sha256@libssh.org", list, listLen)) {
+        out = KexAlg::CURVE25519_SHA256; return true;
+    }
+    return false;
 }
 
 /* ---- Version exchange ---- */
@@ -314,31 +377,87 @@ static void send_our_kexinit(Session& s) {
 
 /* ---- KEX_ECDH_REPLY ---- */
 
-static bool send_kex_ecdh_reply(Session& s) {
-    /* Load host seed; derive host pubkey. */
+/* Load the persistent Ed25519 host seed from storage and derive the public
+ * key. seedOut is written on success. */
+static bool load_host_key(uint8_t seedOut[32], uint8_t hostPubOut[32]) {
     std::string seedB64 = storageGetStr("secrets.sshd.host_seed", "");
     if (seedB64.empty()) { err("sshd: host seed missing"); return false; }
-    uint8_t seed[32];
     size_t got = 0;
-    if (mbedtls_base64_decode(seed, sizeof(seed), &got,
+    if (mbedtls_base64_decode(seedOut, 32, &got,
         (const unsigned char*)seedB64.data(), seedB64.size()) != 0 || got != 32) {
         err("sshd: host seed bad base64"); return false;
     }
-    uint8_t hostPub[32];
-    if (!sshdcrypto::ed25519_pub_from_seed(seed, hostPub)) {
+    if (!sshdcrypto::ed25519_pub_from_seed(seedOut, hostPubOut)) {
         err("sshd: ed25519 pub-from-seed failed (PSA Ed25519 not enabled?)");
         return false;
     }
-    std::string kBlob = build_host_key_blob(hostPub);
+    return true;
+}
 
-    /* Generate ephemeral X25519 keypair. */
+/* Classical curve25519-sha256: compute X25519 ephemeral, set sharedK to the
+ * raw X25519 result. Requires s.peerEphPub to already be set. */
+static bool kex_compute_classical(Session& s) {
     esp_fill_random(s.ephPriv, 32);
     if (!sshdcrypto::x25519_base(s.ephPriv, s.ephPub)) {
         err("sshd: x25519 base failed"); return false;
     }
-    /* Shared secret K. */
     if (!sshdcrypto::x25519_scalar(s.ephPriv, s.peerEphPub, s.sharedK)) {
         err("sshd: x25519 scalar failed"); return false;
+    }
+    return true;
+}
+
+/* mlkem768x25519-sha256: requires s.peerKexBlob to already hold the full
+ * 1216-byte client_blob. Performs ML-KEM encapsulation against the client's
+ * KEM public key, generates an X25519 keypair, derives the X25519 shared
+ * secret against the client's X25519 public key, sets sharedK to
+ * SHA-256(mlkem_ss || x25519_ss), and builds s.ourKexBlob = ct || x25519_pub. */
+static bool kex_compute_pq(Session& s) {
+    if (s.peerKexBlob.size() != sshdcrypto::MLKEM768_PK_BYTES + 32) {
+        err("sshd: bad PQ client_blob size"); return false;
+    }
+    const uint8_t* kemPk    = (const uint8_t*)s.peerKexBlob.data();
+    const uint8_t* peerX    = kemPk + sshdcrypto::MLKEM768_PK_BYTES;
+
+    uint8_t ct[sshdcrypto::MLKEM768_CT_BYTES];
+    uint8_t mlSs[sshdcrypto::MLKEM768_SS_BYTES];
+    if (!sshdcrypto::mlkem768_encap(kemPk, ct, mlSs)) {
+        err("sshd: mlkem768 encap failed (bad pk?)"); return false;
+    }
+
+    esp_fill_random(s.ephPriv, 32);
+    if (!sshdcrypto::x25519_base(s.ephPriv, s.ephPub)) {
+        err("sshd: x25519 base failed"); return false;
+    }
+    uint8_t xSs[32];
+    if (!sshdcrypto::x25519_scalar(s.ephPriv, peerX, xSs)) {
+        err("sshd: x25519 scalar failed"); return false;
+    }
+
+    /* sharedK = SHA-256(mlkem_ss || x25519_ss), per
+     * draft-kampanakis-curdle-ssh-pq-ke / OpenSSH kexmlkem768x25519.c. */
+    sshdcrypto::Sha256 h;
+    h.update(mlSs, sizeof(mlSs));
+    h.update(xSs,  sizeof(xSs));
+    h.finish(s.sharedK);
+
+    /* server_blob = ct(1088) || x25519_pk(32) */
+    s.ourKexBlob.clear();
+    s.ourKexBlob.reserve(sizeof(ct) + 32);
+    s.ourKexBlob.append((const char*)ct, sizeof(ct));
+    s.ourKexBlob.append((const char*)s.ephPub, 32);
+    return true;
+}
+
+static bool send_kex_ecdh_reply(Session& s) {
+    uint8_t seed[32], hostPub[32];
+    if (!load_host_key(seed, hostPub)) return false;
+    std::string kBlob = build_host_key_blob(hostPub);
+
+    if (s.kexAlg == KexAlg::MLKEM768_X25519) {
+        if (!kex_compute_pq(s)) return false;
+    } else {
+        if (!kex_compute_classical(s)) return false;
     }
 
     /* Exchange hash H. */
@@ -358,11 +477,15 @@ static bool send_kex_ecdh_reply(Session& s) {
     put_cstring(sigBlob, "ssh-ed25519");
     put_string(sigBlob, sig, 64);
 
-    /* Emit SSH_MSG_KEX_ECDH_REPLY. */
+    /* Emit SSH_MSG_KEX_ECDH_REPLY. Q_S differs by algorithm. */
     std::string p;
     put_u8(p, MSG_KEX_ECDH_REPLY);
     put_string(p, kBlob.data(), kBlob.size());
-    put_string(p, s.ephPub, 32);
+    if (s.kexAlg == KexAlg::MLKEM768_X25519) {
+        put_string(p, s.ourKexBlob.data(), s.ourKexBlob.size());
+    } else {
+        put_string(p, s.ephPub, 32);
+    }
     put_string(p, sigBlob.data(), sigBlob.size());
     send_packet(s, p);
     return true;
@@ -459,22 +582,42 @@ static bool consume_version(Session& s) {
 /* ---- Phase: KEX ---- */
 
 static void handle_kexinit(Session& s, const std::string& payload) {
-    /* Just store I_C for the exchange hash. We don't enforce algorithm
-     * matching beyond what we offer — we'll fail later if the client
-     * tries something else. */
+    /* Save I_C (entire payload including message-type byte, per RFC 4253 §8). */
     s.peerKexInit.assign(payload);
+    if (!select_kex_alg(payload, s.kexAlg)) {
+        send_disconnect(s, 3, "no common KEX algorithm");
+        return;
+    }
+    info("sshd: KEX %s",
+         s.kexAlg == KexAlg::MLKEM768_X25519 ? "mlkem768x25519-sha256"
+                                             : "curve25519-sha256");
     s.phase = Phase::KEX_WAIT_ECDH;
 }
 
 static bool handle_kex_ecdh_init(Session& s, const std::string& payload) {
-    /* payload: msg_type already stripped by caller. Body = string(Q_C). */
+    /* payload: msg_type already stripped by caller. Body = string(client_blob).
+     * Classical curve25519: client_blob = Q_C (32 bytes).
+     * PQ mlkem768x25519:    client_blob = mlkem_pk(1184) || x25519_pk(32). */
     View v = view_init(payload.data(), payload.size());
-    const uint8_t* q; size_t qLen;
-    if (!get_string(v, &q, &qLen) || qLen != 32) {
+    const uint8_t* blob; size_t blobLen;
+    if (!get_string(v, &blob, &blobLen)) {
         send_disconnect(s, 2, "bad KEX_ECDH_INIT");
         return false;
     }
-    memcpy(s.peerEphPub, q, 32);
+    if (s.kexAlg == KexAlg::MLKEM768_X25519) {
+        constexpr size_t want = sshdcrypto::MLKEM768_PK_BYTES + 32;
+        if (blobLen != want) {
+            send_disconnect(s, 2, "bad PQ KEX_ECDH_INIT size");
+            return false;
+        }
+        s.peerKexBlob.assign((const char*)blob, blobLen);
+    } else {
+        if (blobLen != 32) {
+            send_disconnect(s, 2, "bad KEX_ECDH_INIT size");
+            return false;
+        }
+        memcpy(s.peerEphPub, blob, 32);
+    }
     if (!send_kex_ecdh_reply(s)) {
         send_disconnect(s, 2, "KEX failed");
         return false;

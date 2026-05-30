@@ -32,8 +32,11 @@
 #define SSHD_MAX_SESSIONS  2
 /* mbedTLS X25519 scalarmult + Ed25519 sign (vendored) + ChaCha20-Poly1305
  * frames all happen on this task's stack — 4 KB overflowed during the very
- * first KEX_ECDH_REPLY. Allocated in PSRAM via spawnTask. */
-#define SSHD_TASK_STACK    16384
+ * first KEX_ECDH_REPLY. Bumped to 24 KB after adding the mlkem768x25519
+ * hybrid KEX: ML-KEM-768 portable-C encap peaks at ~6-8 KB extra during
+ * KEX_ECDH_REPLY (matrix sampling + Keccak state in poly_k.c on stack).
+ * Allocated in PSRAM via spawnTask, so the extra cost is negligible. */
+#define SSHD_TASK_STACK    24576
 #define SSHD_TASK_PRIO     5
 
 namespace {

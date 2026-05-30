@@ -7,14 +7,15 @@ Implementation notes for anyone touching the SSH layer. Start with
 
 ```
 esp-idf/
-├── CMakeLists.txt                # bumps MBEDTLS_ALLOW_PRIVATE_ACCESS for the X25519 wrapper
+├── CMakeLists.txt                # bumps MBEDTLS_ALLOW_PRIVATE_ACCESS for the X25519 wrapper; pulls in mlkem-native
 ├── include/sshd.h                # public API (sshdInit, sshdHostFingerprint, sshdActiveSessions)
 └── src/
     ├── sshd.cpp                  # task, storage defaults, CLI, periodic backend-liveness sweep
     ├── sshd_wire.h               # SSH wire-format encode/decode helpers (inline)
-    ├── sshd_crypto.{h,cpp}       # SHA-256, X25519, Ed25519, ChaCha20-Poly1305 (openssh variant)
+    ├── sshd_crypto.{h,cpp}       # SHA-256, X25519, Ed25519, ChaCha20-Poly1305, ML-KEM-768 wrappers
     ├── sshd_session.{h,cpp}      # per-connection state machine
-    └── orlp_ed25519/             # vendored Ed25519 (zlib license, renamed orlp_* to avoid symbol collisions)
+    ├── orlp_ed25519/             # vendored Ed25519 (zlib license, renamed orlp_* to avoid symbol collisions)
+    └── mlkem_native/             # vendored ML-KEM-768 (Apache-2.0 / ISC / MIT; see VENDORED.md)
 ```
 
 The straddle is one IDF component; everything in `src/` compiles in.
@@ -29,8 +30,8 @@ session_on_tcp_data()  <- from sshd.cpp onTcpRecv every time net delivers more b
   while phase != CLOSED:
     consume_version() (only in VERSION) ; send_our_kexinit ; phase = KEX_WAIT_KEXINIT
     parse_packet() ; dispatch_packet()
-      KEXINIT -> store I_C ; phase = KEX_WAIT_ECDH
-      KEX_ECDH_INIT -> send_kex_ecdh_reply ; send NEWKEYS ; encOutbound=true ; phase=KEX_WAIT_NEWKEYS
+      KEXINIT -> store I_C ; intersect peer's name-list ; pick kexAlg ; phase = KEX_WAIT_ECDH
+      KEX_ECDH_INIT -> send_kex_ecdh_reply (branches on kexAlg) ; send NEWKEYS ; encOutbound=true ; phase=KEX_WAIT_NEWKEYS
       NEWKEYS -> encInbound=true ; phase=AUTH
       SERVICE_REQUEST(ssh-userauth) -> ACCEPT
       USERAUTH_REQUEST publickey/password -> verify -> SUCCESS ; phase=RUN
@@ -140,6 +141,78 @@ Three primitives in three places:
   header path inside the vendor.
 - **SHA-256** — `mbedtls_sha256_*`. Used for the exchange hash H, KDF
   blocks, and the host-key fingerprint over the `K_S` blob.
+- **ML-KEM-768 encapsulation** — vendored from
+  [mlkem-native](https://github.com/pq-code-package/mlkem-native), monobuild
+  form (one `mlkem_native.c` that `#include`s the rest). We use only the
+  encapsulation path; keygen and decap stay out of the binary by virtue of
+  being client-side in `mlkem768x25519-sha256`. mlkem-native's portable C
+  backend is the one that compiles in — the AArch64/AVX2/RISC-V backends
+  are gated off and the corresponding source trees are not copied. See
+  `src/mlkem_native/VENDORED.md` for snapshot details and refresh
+  instructions.
+
+## KEX algorithm selection
+
+`build_kexinit_payload` advertises, in preference order:
+
+```
+mlkem768x25519-sha256, curve25519-sha256, curve25519-sha256@libssh.org
+```
+
+`handle_kexinit` walks our preference list against the peer's KEXINIT
+name-list (RFC 4253 §7.1) and stores the chosen algorithm on the session.
+Everything downstream — the wire format of `KEX_ECDH_INIT`/`KEX_ECDH_REPLY`,
+the contents of Q_C/Q_S in the exchange hash, and the encoding of K — then
+branches on `Session::kexAlg`. No new SSH message numbers are introduced:
+the PQ hybrid reuses 30/31, same as the classical curve25519 flow.
+
+### Wire format: `mlkem768x25519-sha256`
+
+Defined by `draft-kampanakis-curdle-ssh-pq-ke`. Our reference for the byte-
+exact layout was OpenSSH's `kexmlkem768x25519.c`.
+
+```
+client → server   SSH_MSG_KEX_ECDH_INIT
+  string  client_blob   = mlkem_pk(1184) || x25519_pk(32)     [1216 bytes]
+
+server → client   SSH_MSG_KEX_ECDH_REPLY
+  string  K_S          = ssh-string("ssh-ed25519") || ssh-string(host_pub32)
+  string  server_blob  = mlkem_ct(1088) || x25519_pk(32)      [1120 bytes]
+  string  signature    = ssh-string("ssh-ed25519") || ssh-string(ed25519_sig64)
+```
+
+Shared secret derivation:
+
+```
+mlkem_ss = ML-KEM-768.Encap(client_mlkem_pk)        # 32 bytes
+x25519_ss = X25519(server_x25519_priv, client_x25519_pk)   # 32 bytes
+K_raw    = mlkem_ss || x25519_ss                    # 64 bytes
+K        = SHA-256(K_raw)                           # 32 bytes
+```
+
+The exchange hash H follows the standard RFC 4253 §8 schema:
+
+```
+H = SHA-256(string(V_C) || string(V_S) ||
+            string(I_C) || string(I_S) || string(K_S) ||
+            string(Q_C) || string(Q_S) || K_enc)
+```
+
+with Q_C = client_blob, Q_S = server_blob, and **K encoded as `string` (not
+`mpint`)** — i.e. a 4-byte length prefix of 32 followed by the 32 hash
+bytes. This is the one byte-format detail that's easy to get wrong; the
+classical `curve25519-sha256` path uses `mpint(K)` as RFC 4253 prescribes.
+`hash_update_K` in `sshd_session.cpp` is the single place both encodings
+live.
+
+### Stack budget
+
+ML-KEM-768 portable-C encapsulation pushes a Keccak state plus several
+polynomial buffers onto the stack — empirically ~6-8 KB transient during
+`KEX_ECDH_REPLY`. The sshd task stack was bumped from 16 KB to 24 KB
+(`SSHD_TASK_STACK` in `sshd.cpp`) to cover this. The stack is allocated
+in PSRAM via `spawnTask(..., STACK_PSRAM)` so the larger allocation is
+essentially free.
 
 ## ITS plumbing — invariants that look subtle but bite
 

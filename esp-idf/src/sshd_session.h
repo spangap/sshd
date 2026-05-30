@@ -19,6 +19,13 @@ enum class Phase : uint8_t { VERSION, KEX_WAIT_KEXINIT, KEX_WAIT_ECDH, KEX_WAIT_
 
 enum class ChanKind : uint8_t { NONE, CLI, LOG };
 
+/* Negotiated KEX algorithm. The on-wire shape of KEX_ECDH_INIT/REPLY and
+ * the encoding of K in the exchange hash differ between these. */
+enum class KexAlg : uint8_t {
+    CURVE25519_SHA256,    /* curve25519-sha256 (and @libssh.org alias) */
+    MLKEM768_X25519,      /* mlkem768x25519-sha256 (PQ hybrid, FIPS 203) */
+};
+
 struct Session {
     int        slot;               /* our index in sshd.cpp's session array */
     int        tcp;                /* ITS handle from net → sshd */
@@ -32,12 +39,20 @@ struct Session {
     std::string ourVersion;        /* same, ours */
 
     /* KEX state */
-    std::string peerKexInit;       /* I_C: raw KEXINIT payload (sans message-type) */
-    std::string ourKexInit;        /* I_S: raw KEXINIT payload (sans message-type) */
+    KexAlg      kexAlg;            /* negotiated; valid from KEX_WAIT_ECDH on */
+    std::string peerKexInit;       /* I_C: raw KEXINIT payload (with message-type byte) */
+    std::string ourKexInit;        /* I_S: raw KEXINIT payload (with message-type byte) */
     uint8_t     ephPriv[32];       /* our X25519 ephemeral private */
     uint8_t     ephPub[32];        /* our X25519 ephemeral public */
-    uint8_t     peerEphPub[32];    /* Q_C */
-    uint8_t     sharedK[32];       /* K (X25519 result) */
+    /* Classical KEX: Q_C is the peer's X25519 public; the shared K is the raw
+     * X25519 result. PQ KEX: peerKexBlob holds the full client_blob
+     * (mlkem_pk(1184) || x25519_pk(32)) for the exchange hash, and sharedK
+     * is SHA-256(mlkem_ss || x25519_ss). Either way K fits in 32 bytes,
+     * but its encoding into H/key-derivation differs. */
+    uint8_t     peerEphPub[32];    /* curve25519-only: Q_C */
+    std::string peerKexBlob;       /* PQ-only: full client_blob */
+    std::string ourKexBlob;        /* PQ-only: full server_blob (ct || x25519_pk) */
+    uint8_t     sharedK[32];       /* K material (32 bytes for both algs) */
     uint8_t     sessionId[32];     /* H from the first KEX, persists */
     bool        haveSessionId;
 
