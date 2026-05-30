@@ -113,14 +113,11 @@ cookie machinery, hardcode the SSH user to `admin`, and drop
 
 ## Setup
 
-In a buildable that already depends on `spangap/spangap-net` (everything
-with network needs it):
-
-```yaml
-# straddle.yaml
-extra_requires:
-  - spangap/sshd
-```
+This straddle is ad-hoc: don't list it in the buildable's `straddle.yaml`.
+Pull it in at build time with `--include` so the cost (flash, key
+material, host RSA, etc.) only lands on builds that actually want SSH.
+In the buildable (which already depends on `spangap/spangap-net` —
+everything with network does):
 
 ```cpp
 // app_main, after netInit()
@@ -134,6 +131,10 @@ Then build with the straddle included:
 ```
 spangap build --include spangap/sshd
 ```
+
+(Slash-form `--include` auto-clones `spangap/sshd` into the workspace
+on first use. Bare `--include sshd` works once it's already a workspace
+sibling.)
 
 First boot creates the host seed automatically. Set the rest from the
 spangap CLI:
