@@ -6,6 +6,8 @@
  * (KEX, userauth, channels) lives in sibling translation units and is not
  * implemented yet — incoming connections are accepted, logged, and dropped.
  */
+#include "sdkconfig.h"
+
 #include "sshd.h"
 #include "sshd_session.h"
 #include "sshd_crypto.h"
@@ -194,13 +196,24 @@ int keyCount() {
 
 void cmdSshd(const char* a) {
     if (a[0] == '\0' || strcmp(a, "help") == 0) {
-        cliPrintf("  %-*s status / fingerprint / keys / add / del / reset\n", CLI_HELP_COL, "sshd ...");
+        cliPrintf("  %-*s enable / disable / status / fingerprint / keys / add / del / reset\n", CLI_HELP_COL, "sshd ...");
+        cliPrintf("  %-*s start the server (s.sshd.enabled=1)\n", CLI_HELP_COL, "sshd enable");
+        cliPrintf("  %-*s stop the server (s.sshd.enabled=0)\n", CLI_HELP_COL, "sshd disable");
         cliPrintf("  %-*s show current state\n", CLI_HELP_COL, "sshd status");
         cliPrintf("  %-*s SHA256 of host public key\n", CLI_HELP_COL, "sshd fingerprint");
         cliPrintf("  %-*s list authorized keys\n", CLI_HELP_COL, "sshd keys");
         cliPrintf("  %-*s append an ssh-ed25519 public key\n", CLI_HELP_COL, "sshd add <key>");
         cliPrintf("  %-*s remove key at index\n", CLI_HELP_COL, "sshd del <idx>");
         cliPrintf("  %-*s force-close all active sessions\n", CLI_HELP_COL, "sshd reset");
+        return;
+    }
+
+    if (strcmp(a, "enable") == 0 || strcmp(a, "disable") == 0) {
+        bool on = a[0] == 'e';
+        storageSet("s.sshd.enabled", on ? 1 : 0);
+        /* sshdTask's NOW_AND_ON_CHANGE("s.sshd.enabled") fires applyListenerState()
+         * which (de)opens the net listener immediately — no reboot needed. */
+        cliPrintf("  sshd %s\n", on ? "enabled" : "disabled");
         return;
     }
 
@@ -222,6 +235,9 @@ void cmdSshd(const char* a) {
         cliPrintf("  port:     %d\n", port);
         cliPrintf("  sessions: %d / %d\n", sshdActiveSessions(), SSHD_MAX_SESSIONS);
         cliPrintf("  keys:     %d authorized\n", keyCount());
+        cliPrintf("  color:    cli=%s  log=%s\n",
+                  storageGetInt("s.sshd.color", 0)    ? "on" : "off",
+                  storageGetInt("s.sshd.logcolor", 0) ? "on" : "off");
         char fp[64];
         if (sshdHostFingerprint(fp, sizeof(fp))) cliPrintf("  hostkey:  %s\n", fp);
         else                                     cliPrintf("  hostkey:  (pending — protocol not yet implemented)\n");
@@ -347,6 +363,11 @@ void sshdInit() {
     if (storageGetInt("s.sshd.version", 0) < SSHD_VERSION) {
         storageDefault("s.sshd.enabled", 0);
         storageDefault("s.sshd.port", SSHD_PORT_TCP);
+        /* ANSI color on the relayed CLI / log streams — off by default so a
+         * remote `ssh` session (often piped/scripted) gets clean text; set to 1
+         * to keep colors. */
+        storageDefault("s.sshd.color", 0);
+        storageDefault("s.sshd.logcolor", 0);
         storageDefaultTree("s.sshd", "{\"authorized_keys\":[]}");
         storageSet("s.sshd.version", SSHD_VERSION);
     }
@@ -359,4 +380,11 @@ void sshdInit() {
 
     s_task = spawnTask(sshdTask, "sshd", SSHD_TASK_STACK, nullptr,
                        SSHD_TASK_PRIO, 1, STACK_PSRAM);
+
+#if CONFIG_SPANGAP_LCD
+    /* On-device Settings pane (enable switch). lcdRegisterSettings only
+     * populates spangap-lcd's in-RAM menu tree, so it's safe here even though
+     * lcdInit() runs later from the buildable's main.cpp. */
+    sshdLcdRegister();
+#endif
 }

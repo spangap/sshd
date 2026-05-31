@@ -72,6 +72,8 @@ All keys live under the standard spangap storage tree.
 | ---------------------------- | --------- | ---------------------- | ------- |
 | `s.sshd.enabled`             | synced    | `false`                | master switch |
 | `s.sshd.port`                | synced    | `22`                   | TCP listen port |
+| `s.sshd.color`               | synced    | `false`                | CLI color — passes `CLI_COLOR`/`CLI_NO_COLOR` to the cli backend |
+| `s.sshd.logcolor`            | synced    | `false`                | log color — passes `LOG_ANSI`/`LOG_NO_ANSI` to the log backend |
 | `s.sshd.authorized_keys[]`   | synced    | `[]`                   | one `ssh-ed25519 AAAA… optional-comment` per array entry |
 | `secrets.sshd.host_seed`     | secret    | (auto on first boot)   | 32-byte Ed25519 seed, base64 |
 | `secrets.sshd.password`      | secret    | `""`                   | optional fallback (empty = disabled) |

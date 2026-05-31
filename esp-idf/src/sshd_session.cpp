@@ -880,17 +880,27 @@ static void send_channel_eof(Session& s) {
     send_packet(s, p);
 }
 
-/* SSH_MSG_DISCONNECT, reason 11 = SSH_DISCONNECT_BY_APPLICATION. Sent
- * before we tear the TCP socket down so the client exits at the protocol
- * level rather than waiting on a TCP-FIN detection (macOS ssh in
- * particular sits idle when the channel closes but no DISCONNECT arrives). */
-static void send_application_disconnect(Session& s) {
+/* RFC 4254 §6.10 "exit-status": tell the client what the shell/command exited
+ * with, sent (no reply wanted) just before CHANNEL_EOF/CLOSE. We don't track a
+ * real per-command code from the cli backend, so a normal logout reports 0.
+ *
+ * This replaces the old send_application_disconnect(): that sent an
+ * SSH_MSG_DISCONNECT (reason 11 = SSH_DISCONNECT_BY_APPLICATION) to force the
+ * client to exit at the protocol level, but OpenSSH treats *any* received
+ * DISCONNECT as an error — it logs "Received disconnect from <host> port
+ * 22:11:" and calls cleanup_exit(255), discarding any exit code. A stock sshd
+ * never sends DISCONNECT on a normal exit; it sends exit-status + EOF + CLOSE
+ * and lets the transport close. With session_close()'s drain-before-close the
+ * EOF/CLOSE reliably reach the wire, so the client now exits cleanly (0) and
+ * prints "Connection to <host> closed." like any other server. */
+static void send_exit_status(Session& s, uint32_t status) {
     if (s.phase == Phase::CLOSED || s.tcp < 0) return;
     std::string p;
-    put_u8(p, MSG_DISCONNECT);
-    put_u32(p, 11);
-    put_cstring(p, "");
-    put_cstring(p, "");
+    put_u8(p, MSG_CHANNEL_REQUEST);
+    put_u32(p, s.peerChannel);
+    put_cstring(p, "exit-status");
+    put_u8(p, 0);                 /* want_reply = false */
+    put_u32(p, status);
     send_packet(s, p);
 }
 
@@ -903,15 +913,28 @@ static void on_backend_disconnect_cb(int ref);
  * fan out to the log consumer (us), feeding a recursive flood. */
 static bool open_backend_with_mode(Session& s, int sessionSlot, cli_mode_t cliMode) {
     if (s.chanKind == ChanKind::CLI) {
-        cli_connect_t cc = { cliMode, 0 };
+        /* Tell the CLI backend whether to emit color. Default off — a remote
+         * ssh session is as often piped/scripted as a color terminal; set
+         * s.sshd.color=1 to keep colors. */
+        cli_color_t color = storageGetInt("s.sshd.color", 0) ? CLI_COLOR : CLI_NO_COLOR;
+        /* exec uses CLI_LINE (one-shot, closed by the trailing ';') — suppress
+         * the connect-time prompt so it doesn't prefix the command output. The
+         * interactive shell (CLI_ANSI) keeps its prompt. */
+        uint8_t noPrompt = (cliMode == CLI_LINE) ? 1 : 0;
+        cli_connect_t cc = { cliMode, 0, color, noPrompt };
         s.backendHandle = itsConnect("cli", CLI_PORT_TCP,
                                      &cc, sizeof(cc), pdMS_TO_TICKS(500),
                                      sessionSlot,
                                      on_backend_recv_cb,
                                      on_backend_disconnect_cb);
     } else if (s.chanKind == ChanKind::LOG) {
+        /* The log backend owns level→color formatting; ask it natively via the
+         * connect payload (logTcpConnect honors it). Default plain like nc;
+         * s.sshd.logcolor=1 turns on color. */
+        bool logColor = storageGetInt("s.sshd.logcolor", 0) != 0;
+        log_connect_t lc = { logColor ? LOG_ANSI : LOG_NO_ANSI };
         s.backendHandle = itsConnect("log", LOG_PORT_TCP,
-                                     nullptr, 0, pdMS_TO_TICKS(500),
+                                     &lc, sizeof(lc), pdMS_TO_TICKS(500),
                                      sessionSlot,
                                      on_backend_recv_cb,
                                      on_backend_disconnect_cb);
@@ -1070,7 +1093,8 @@ static void handle_channel_close(Session& s) {
     if (s.backendHandle >= 0) { itsDisconnect(s.backendHandle); s.backendHandle = -1; }
     send_channel_close(s);
     s.chanOpen = false;
-    send_application_disconnect(s);
+    /* Peer initiated the close, so it's already on its way out — no exit-status
+     * or DISCONNECT needed (and a DISCONNECT here would make it exit 255). */
     /* Single-channel session — once the channel is gone, end the SSH session
      * too. session_on_tcp_data's loop exit will pick up phase==CLOSED and
      * call session_close to free the slot. */
@@ -1245,10 +1269,12 @@ void session_on_backend_close(Session& s) {
      * we've sent EOF + CLOSE there is no replay path for missed bytes. */
     session_on_backend_data(s);
     if (s.backendHandle >= 0) { itsDisconnect(s.backendHandle); s.backendHandle = -1; }
+    /* Clean exit: status 0 + EOF + CLOSE (then session_close drops the socket).
+     * This is what makes `ssh … ; echo $?` return 0 on logout instead of 255. */
+    send_exit_status(s, 0);
     send_channel_eof(s);
     send_channel_close(s);
     s.chanOpen = false;
-    send_application_disconnect(s);
     /* Single-channel session — once the channel is gone, tear down the SSH
      * session too. session_close drains s.tcp before hard-closing so the
      * queued CHANNEL_DATA / EOF / CLOSE / DISCONNECT actually reach the wire. */

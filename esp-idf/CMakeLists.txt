@@ -1,4 +1,8 @@
 file(GLOB SSHD_SRCS "src/*.cpp")
+# On-device LCD Settings slice. Folded in manually (the activator-driven
+# source-list exclusion isn't implemented yet); its body is wrapped in
+# #if CONFIG_SPANGAP_LCD so it compiles to nothing when spangap-lcd is excluded.
+list(APPEND SSHD_SRCS "lcd/src/sshd_lcd.cpp")
 # Vendored orlp/ed25519 (zlib license; see src/orlp_ed25519/LICENSE.txt).
 # IDF's mbedTLS does not ship Ed25519 sources, so we bring in our own.
 set(ORLP_ED25519_SRCS
