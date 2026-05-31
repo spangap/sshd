@@ -195,16 +195,16 @@ int keyCount() {
 }
 
 void cmdSshd(const char* a) {
-    if (a[0] == '\0' || strcmp(a, "help") == 0) {
-        cliPrintf("  %-*s enable / disable / status / fingerprint / keys / add / del / reset\n", CLI_HELP_COL, "sshd ...");
-        cliPrintf("  %-*s start the server (s.sshd.enabled=1)\n", CLI_HELP_COL, "sshd enable");
-        cliPrintf("  %-*s stop the server (s.sshd.enabled=0)\n", CLI_HELP_COL, "sshd disable");
-        cliPrintf("  %-*s show current state\n", CLI_HELP_COL, "sshd status");
-        cliPrintf("  %-*s SHA256 of host public key\n", CLI_HELP_COL, "sshd fingerprint");
-        cliPrintf("  %-*s list authorized keys\n", CLI_HELP_COL, "sshd keys");
-        cliPrintf("  %-*s append an ssh-ed25519 public key\n", CLI_HELP_COL, "sshd add <key>");
-        cliPrintf("  %-*s remove key at index\n", CLI_HELP_COL, "sshd del <idx>");
-        cliPrintf("  %-*s force-close all active sessions\n", CLI_HELP_COL, "sshd reset");
+    if (strcmp(a, "help") == 0) { cliPrintf("%-*s SSH server status + key management\n", CLI_HELP_COL, "sshd [...]"); return; }
+    if (cliWantsHelp(a)) {
+        cliPrintf("%-*s show current state\n", CLI_HELP_COL, "sshd");
+        cliPrintf("%-*s start the server (s.sshd.enabled=1)\n", CLI_HELP_COL, "sshd enable");
+        cliPrintf("%-*s stop the server (s.sshd.enabled=0)\n", CLI_HELP_COL, "sshd disable");
+        cliPrintf("%-*s SHA256 of host public key\n", CLI_HELP_COL, "sshd fingerprint");
+        cliPrintf("%-*s list authorized keys\n", CLI_HELP_COL, "sshd keys");
+        cliPrintf("%-*s append an ssh-ed25519 public key\n", CLI_HELP_COL, "sshd add <key>");
+        cliPrintf("%-*s remove key at index\n", CLI_HELP_COL, "sshd del <idx>");
+        cliPrintf("%-*s force-close all active sessions\n", CLI_HELP_COL, "sshd reset");
         return;
     }
 
@@ -213,7 +213,7 @@ void cmdSshd(const char* a) {
         storageSet("s.sshd.enabled", on ? 1 : 0);
         /* sshdTask's NOW_AND_ON_CHANGE("s.sshd.enabled") fires applyListenerState()
          * which (de)opens the net listener immediately — no reboot needed. */
-        cliPrintf("  sshd %s\n", on ? "enabled" : "disabled");
+        cliPrintf("sshd %s\n", on ? "enabled" : "disabled");
         return;
     }
 
@@ -224,36 +224,36 @@ void cmdSshd(const char* a) {
             sshdses::session_close(s_sessions[i]);
             killed++;
         }
-        cliPrintf("  killed %d session(s)\n", killed);
+        cliPrintf("killed %d session(s)\n", killed);
         return;
     }
 
-    if (strcmp(a, "status") == 0) {
+    if (a[0] == '\0') {
         bool enabled = storageGetInt("s.sshd.enabled", 0) != 0;
         int port = storageGetInt("s.sshd.port", SSHD_PORT_TCP);
-        cliPrintf("  enabled:  %s\n", enabled ? "yes" : "no");
-        cliPrintf("  port:     %d\n", port);
-        cliPrintf("  sessions: %d / %d\n", sshdActiveSessions(), SSHD_MAX_SESSIONS);
-        cliPrintf("  keys:     %d authorized\n", keyCount());
-        cliPrintf("  color:    cli=%s  log=%s\n",
+        cliPrintf("enabled:  %s\n", enabled ? "yes" : "no");
+        cliPrintf("port:     %d\n", port);
+        cliPrintf("sessions: %d / %d\n", sshdActiveSessions(), SSHD_MAX_SESSIONS);
+        cliPrintf("keys:     %d authorized\n", keyCount());
+        cliPrintf("color:    cli=%s  log=%s\n",
                   storageGetInt("s.sshd.color", 0)    ? "on" : "off",
                   storageGetInt("s.sshd.logcolor", 0) ? "on" : "off");
         char fp[64];
-        if (sshdHostFingerprint(fp, sizeof(fp))) cliPrintf("  hostkey:  %s\n", fp);
-        else                                     cliPrintf("  hostkey:  (pending — protocol not yet implemented)\n");
+        if (sshdHostFingerprint(fp, sizeof(fp))) cliPrintf("hostkey:  %s\n", fp);
+        else                                     cliPrintf("hostkey:  (pending — protocol not yet implemented)\n");
         return;
     }
 
     if (strcmp(a, "fingerprint") == 0) {
         char fp[64];
-        if (sshdHostFingerprint(fp, sizeof(fp))) cliPrintf("  %s\n", fp);
-        else                                     cliPrintf("  (host key derivation pending — wire protocol PR will add it)\n");
+        if (sshdHostFingerprint(fp, sizeof(fp))) cliPrintf("%s\n", fp);
+        else                                     cliPrintf("(host key derivation pending — wire protocol PR will add it)\n");
         return;
     }
 
     if (strcmp(a, "keys") == 0) {
         int n = keyCount();
-        if (n == 0) { cliPrintf("  (no authorized keys)\n"); return; }
+        if (n == 0) { cliPrintf("(no authorized keys)\n"); return; }
         for (int i = 0; i < n; i++) {
             char k[64]; snprintf(k, sizeof(k), "s.sshd.authorized_keys.%d", i);
             std::string v = storageGetStr(k, "");
@@ -261,7 +261,7 @@ void cmdSshd(const char* a) {
              * blob can be very long; print prefix + comment for at-a-glance. */
             const char* sp1 = strchr(v.c_str(), ' ');
             const char* sp2 = sp1 ? strchr(sp1 + 1, ' ') : nullptr;
-            cliPrintf("  [%d] %.*s  %s\n",
+            cliPrintf("[%d] %.*s  %s\n",
                       i,
                       sp1 ? (int)(sp1 - v.c_str()) : (int)v.size(), v.c_str(),
                       sp2 ? sp2 + 1 : "(no comment)");
@@ -273,20 +273,20 @@ void cmdSshd(const char* a) {
         const char* line = a + 4;
         while (*line == ' ') line++;
         if (!keyTypeOk(line)) {
-            cliPrintf("  only ssh-ed25519 keys are accepted\n");
+            cliPrintf("only ssh-ed25519 keys are accepted\n");
             return;
         }
         int n = keyCount();
         char k[64]; snprintf(k, sizeof(k), "s.sshd.authorized_keys.%d", n);
         storageSet(k, line);
-        cliPrintf("  added at index %d\n", n);
+        cliPrintf("added at index %d\n", n);
         return;
     }
 
     if (strncmp(a, "del ", 4) == 0) {
         int idx = atoi(a + 4);
         int n = keyCount();
-        if (idx < 0 || idx >= n) { cliPrintf("  index out of range (0..%d)\n", n - 1); return; }
+        if (idx < 0 || idx >= n) { cliPrintf("index out of range (0..%d)\n", n - 1); return; }
         /* Shift entries [idx+1, n-1] down by one, then drop the tail. One
          * transaction so subscribers see the array land in its final shape. */
         storageBegin();
@@ -300,11 +300,11 @@ void cmdSshd(const char* a) {
         snprintf(tail, sizeof(tail), "s.sshd.authorized_keys.%d", n - 1);
         storageUnset(tail);
         storageEnd();
-        cliPrintf("  removed index %d (%d remain)\n", idx, n - 1);
+        cliPrintf("removed index %d (%d remain)\n", idx, n - 1);
         return;
     }
 
-    cliPrintf("  unknown subcommand. try `sshd help`\n");
+    cliPrintf("unknown subcommand. try `sshd -h`\n");
 }
 
 } /* namespace */

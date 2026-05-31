@@ -123,7 +123,7 @@ Three primitives in three places:
 - **Ed25519** — vendored from `orlp/ed25519` because IDF's mbedTLS does
   not ship Ed25519 sources. All symbols renamed `orlp_*` to avoid
   colliding with the `donna`-based Ed25519 that `microreticulum` (under
-  `reticulous-core`) also vendors. If you ever bump the vendored copy,
+  `rns`) also vendors. If you ever bump the vendored copy,
   rerun the rename sweep:
 
   ```
