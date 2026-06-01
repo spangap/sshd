@@ -11,6 +11,7 @@
 #include "sshd.h"
 #include "sshd_session.h"
 #include "sshd_crypto.h"
+#include "ssh_client.h"
 #include "net.h"
 #include "cli.h"
 #include "log.h"
@@ -307,6 +308,56 @@ void cmdSshd(const char* a) {
     cliPrintf("unknown subcommand. try `sshd -h`\n");
 }
 
+/* Build an openssh-format public-key line "ssh-ed25519 <base64-blob>" from a
+ * raw 32-byte Ed25519 public key (blob = string("ssh-ed25519") || string(pub)). */
+std::string opensshPubkeyLine(const uint8_t pub[32]) {
+    uint8_t blob[4 + 11 + 4 + 32];
+    blob[0] = 0; blob[1] = 0; blob[2] = 0; blob[3] = 11;
+    memcpy(blob + 4, "ssh-ed25519", 11);
+    blob[15] = 0; blob[16] = 0; blob[17] = 0; blob[18] = 32;
+    memcpy(blob + 19, pub, 32);
+    char b64[120];
+    if (!b64Encode(blob, sizeof(blob), b64, sizeof(b64))) return "";
+    return std::string("ssh-ed25519 ") + b64;
+}
+
+/* sshd-keygen — regenerate the host key (secrets.sshd.host_seed). Destructive:
+ * existing clients' known_hosts entries for this device stop matching. */
+void cmdSshdKeygen(const char* a) {
+    if (cliWantsHelp(a)) {
+        cliPrintf("%-*s regenerate the SSH host key (secrets.sshd.host_seed)\n",
+                  CLI_HELP_COL, "sshd-keygen");
+        return;
+    }
+    uint8_t seed[32];
+    esp_fill_random(seed, sizeof(seed));
+    char b64[64];
+    if (!b64Encode(seed, sizeof(seed), b64, sizeof(b64))) { cliPrintf("sshd-keygen: encode failed\n"); return; }
+    storageSet("secrets.sshd.host_seed", b64);
+    info("sshd: host key regenerated");
+    char fp[64];
+    if (sshdHostFingerprint(fp, sizeof(fp))) cliPrintf("new host key: %s\n", fp);
+    else                                     cliPrintf("new host key generated\n");
+}
+
+/* sshd-showkey — print the host public key in openssh authorized_keys form,
+ * with " <hostname>" appended (paste-ready for a remote known_hosts/authkeys). */
+void cmdSshdShowkey(const char* a) {
+    if (cliWantsHelp(a)) {
+        cliPrintf("%-*s print the SSH host public key (ssh-ed25519 …)\n",
+                  CLI_HELP_COL, "sshd-showkey");
+        return;
+    }
+    uint8_t seed[32];
+    if (!loadHostSeed(seed)) { cliPrintf("(no host key — run sshd-keygen)\n"); return; }
+    uint8_t pub[32];
+    if (!sshdcrypto::ed25519_pub_from_seed(seed, pub)) { cliPrintf("sshd-showkey: derive failed\n"); return; }
+    std::string line = opensshPubkeyLine(pub);
+    if (line.empty()) { cliPrintf("sshd-showkey: encode failed\n"); return; }
+    char host[48]; storageGetStr("s.net.hostname", host, sizeof(host), "spangap");
+    cliPrintf("%s %s\n", line.c_str(), host);
+}
+
 } /* namespace */
 
 /* ---------- bridge for sshd_session.cpp ---------- */
@@ -377,6 +428,11 @@ void sshdInit() {
     if (!loadHostSeed(seed)) generateHostSeed();
 
     cliRegisterCmd("sshd", cmdSshd);
+    cliRegisterCmd("sshd-keygen", cmdSshdKeygen);
+    cliRegisterCmd("sshd-showkey", cmdSshdShowkey);
+
+    /* Outbound client half (ssh / ssh-keygen / ssh-showkey + worker task). */
+    sshClientInit();
 
     s_task = spawnTask(sshdTask, "sshd", SSHD_TASK_STACK, nullptr,
                        SSHD_TASK_PRIO, 1, STACK_PSRAM);
