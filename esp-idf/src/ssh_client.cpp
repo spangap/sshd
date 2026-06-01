@@ -845,7 +845,9 @@ static bool do_channel(Csess& cs) {
         put_cstring(p, "pty-req");
         put_u8(p, 1);                           /* want_reply */
         put_cstring(p, "xterm");
-        put_u32(p, 80); put_u32(p, 24);         /* cols, rows */
+        int tcols = 80, trows = 24;
+        cliTermSize(&tcols, &trows);            /* the client's real terminal size */
+        put_u32(p, tcols); put_u32(p, trows);   /* cols, rows */
         put_u32(p, 0);  put_u32(p, 0);          /* width/height in px (unknown) */
         uint8_t modes[1] = { 0 };               /* TTY_OP_END only */
         put_string(p, modes, sizeof(modes));
@@ -1167,11 +1169,9 @@ static void cmd_ssh(const char* a) {
         /* interactive shell: pump channel output to the CLI AND raw keystrokes
          * back to the worker. `~.` at the start of a line disconnects (`~~`
          * sends a literal '~'), mirroring OpenSSH's escape. */
-        /* Tell a capable client (browser web-CLI) to enter raw passthrough:
-         * stop local echo + line editing and send keystrokes char-by-char, so
-         * the remote pty is the only echoer (otherwise commands echo twice) and
-         * Ctrl-C/arrows/vim work. A private OSC; dumb terminals ignore it. */
-        cliWrite("\x1b]5379;1\x07", 9);
+        /* Clients are dumb terminals — the device CLI runs them in CLI_ANSI and
+         * the remote pty echoes keystrokes back through this relay, so there is
+         * no local echo to suppress and nothing to toggle. */
         cliPrintf("(connected — '~.' on a new line disconnects)\r\n");
         bool atLineStart = true, sawTilde = false;
         for (;;) {
@@ -1213,7 +1213,6 @@ static void cmd_ssh(const char* a) {
                 break;
             }
         }
-        cliWrite("\x1b]5379;0\x07", 9);   /* back to cooked/line mode on the client */
     }
     s_job = nullptr;
     vStreamBufferDelete(job.out);
