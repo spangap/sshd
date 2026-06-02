@@ -1129,7 +1129,11 @@ static void cmd_ssh(const char* a) {
         if (!job.havePassword) { cliPrintf("ssh: no password entered\n"); return; }
     }
 
-    if (!s_worker) { cliPrintf("ssh: worker not ready\n"); return; }
+    /* Bring the crypto worker up on first use (kept alive afterward). */
+    if (!s_worker) {
+        s_worker = spawnTask(worker_task, "ssh", 24576, nullptr, 5, 1, STACK_PSRAM);
+        if (!s_worker) { cliPrintf("ssh: cannot start worker\n"); return; }
+    }
 
     /* One session at a time: the worker + s_job are a single slot. Two CLI
      * sessions racing here would clobber s_job and strand a relay loop waiting
@@ -1167,13 +1171,16 @@ static void cmd_ssh(const char* a) {
         }
     } else {
         /* interactive shell: pump channel output to the CLI AND raw keystrokes
-         * back to the worker. `~.` at the start of a line disconnects (`~~`
-         * sends a literal '~'), mirroring OpenSSH's escape. */
+         * back to the worker. Typing "..!" at the start of a line disconnects.
+         * A partial match ("." or "..") not completed by the next char is
+         * forwarded verbatim, so it only ever eats a literal "..!" line-start. */
         /* Clients are dumb terminals — the device CLI runs them in CLI_ANSI and
          * the remote pty echoes keystrokes back through this relay, so there is
          * no local echo to suppress and nothing to toggle. */
-        cliPrintf("(connected — '~.' on a new line disconnects)\r\n");
-        bool atLineStart = true, sawTilde = false;
+        static const char kEsc[] = "..!";   /* 3-char line-start disconnect escape */
+        cliPrintf("Connected!  ('..!' on a new line disconnects)\r\n");
+        bool atLineStart = true;
+        size_t escMatch = 0;                 /* chars of kEsc withheld so far */
         for (;;) {
             size_t n = xStreamBufferReceive(job.out, buf, sizeof(buf), 0);
             if (n) cliWrite((const char*)buf, n);
@@ -1189,15 +1196,17 @@ static void cmd_ssh(const char* a) {
             std::string fwd;
             for (int i = 0; i < r; i++) {
                 char c = ib[i];
-                if (sawTilde) {
-                    sawTilde = false;
-                    if (c == '.') { job.userClose = true; break; }
-                    if (c == '~') { fwd.push_back('~'); atLineStart = false; continue; }
-                    fwd.push_back('~'); fwd.push_back(c);
-                    atLineStart = (c == '\r' || c == '\n');
-                    continue;
+                if (escMatch) {
+                    if (c == kEsc[escMatch]) {
+                        if (++escMatch == sizeof(kEsc) - 1) { job.userClose = true; break; }
+                        continue;                       /* keep withholding */
+                    }
+                    /* mismatch: flush the withheld prefix, then handle c below */
+                    fwd.append(kEsc, escMatch);
+                    escMatch = 0;
+                    atLineStart = false;                /* withheld chars weren't newlines */
                 }
-                if (atLineStart && c == '~') { sawTilde = true; atLineStart = false; continue; }
+                if (atLineStart && c == kEsc[0]) { escMatch = 1; continue; }
                 fwd.push_back(c);
                 atLineStart = (c == '\r' || c == '\n');
             }
@@ -1272,6 +1281,9 @@ void sshClientInit() {
 
     if (!s_startSem) s_startSem = xSemaphoreCreateBinary();
     if (!s_busyMtx)  s_busyMtx  = xSemaphoreCreateMutex();
-    if (!s_worker)
-        s_worker = spawnTask(worker_task, "sshcli", 24576, nullptr, 5, 1, STACK_PSRAM);
+    /* worker_task (and its 24 KB PSRAM crypto stack) is spawned lazily on the
+       first `ssh` command — a device that never connects out never pays for it.
+       Once up it stays: the ITS client registration it makes on startup can't be
+       reclaimed when a task exits (its.cpp taskFindOrCreate is append-only), so
+       respawning per session would leak an ITS slot each time. */
 }
