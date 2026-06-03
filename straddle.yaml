@@ -19,7 +19,8 @@ optional_requires:
 # Auto-init: spangap-inside folds this into the buildable's generated
 # spangapInitStraddles() dispatcher, so `--include spangap/sshd` brings the
 # daemon up with no consumer main.cpp edit. sshdInit() needs net + storage +
-# cli, all up by the dispatcher's call site; default order (100) places it in
-# the services band. It then stays idle until s.sshd.enabled is set.
+# cli — all up by the time the straddle band runs (net is in the platform band,
+# `requires: spangap/spangap-net` makes it explicit). It then stays idle until
+# s.sshd.enabled is set.
 init:
   - call: sshdInit
