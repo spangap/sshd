@@ -5,16 +5,13 @@
  * `sshd enable`/`disable` and the web panel toggle, and which sshdTask
  * subscribes to — so flipping it here starts/stops the listener immediately).
  *
- * Gated on CONFIG_SPANGAP_LCD: when spangap-lcd is excluded from the build
- * (`--no-lcd` / not in the dep graph) this whole unit compiles to nothing and
- * sshdInit()'s call to sshdLcdRegister() is #if'd out too. Registration only
+ * This whole file lives under conditional/spangap-lcd/, compiled only when the
+ * spangap-lcd straddle is staged, so no #if is needed. It registers via the
+ * when:-gated init: hook (spangap/spangap-lcd) — sshdLcdRegister, plain C++
+ * linkage to match the generated dispatcher's forward decl. Registration only
  * populates spangap-lcd's in-RAM settings tree (safe from any init task, before
- * lcdInit()), so sshdInit() calls it directly — no main.cpp wiring.
+ * lcdInit()), so it runs in the straddle init band rather than from sshdInit().
  */
-#include "sdkconfig.h"
-
-#if CONFIG_SPANGAP_LCD
-
 #include "lcd.h"
 #include "sshd.h"
 
@@ -28,8 +25,9 @@ void sshdSettingsPane(void* arg) {
 
 }  // namespace
 
-void sshdLcdRegister() {
+/* Register the SSH server's on-device Settings pane — a when:-gated init: hook
+ * (spangap/spangap-lcd). Plain C++ linkage to match the generated dispatcher's
+ * forward decl. */
+void sshdLcdRegister(void) {
     lcdRegisterSettings("Net/SSH", "SSH", sshdSettingsPane);
 }
-
-#endif /* CONFIG_SPANGAP_LCD */

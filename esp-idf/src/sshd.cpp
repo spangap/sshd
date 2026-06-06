@@ -111,7 +111,7 @@ void registerEndpointOnce() {
 
 /* Drive the listener via storage: net reacts to s.net.sshd_port changes. */
 void applyListenerState() {
-    bool enabled = storageGetInt("s.sshd.enabled", 0) != 0;
+    bool enabled = storageGetInt("s.sshd.enabled", 1) != 0;
     int  port    = storageGetInt("s.sshd.port", SSHD_PORT_TCP);
     int  want    = enabled ? port : 0;
     if (storageGetInt("s.net.sshd_port", -1) == want) return;
@@ -230,7 +230,7 @@ void cmdSshd(const char* a) {
     }
 
     if (a[0] == '\0') {
-        bool enabled = storageGetInt("s.sshd.enabled", 0) != 0;
+        bool enabled = storageGetInt("s.sshd.enabled", 1) != 0;
         int port = storageGetInt("s.sshd.port", SSHD_PORT_TCP);
         cliPrintf("enabled:  %s\n", enabled ? "yes" : "no");
         cliPrintf("port:     %d\n", port);
@@ -412,7 +412,10 @@ bool sshdHostFingerprint(char* buf, size_t bufLen) {
 void sshdInit() {
     /* Self-register storage defaults, gated on s.sshd.version. */
     if (storageGetInt("s.sshd.version", 0) < SSHD_VERSION) {
-        storageDefault("s.sshd.enabled", 0);
+        /* Enabled by default: sshd never admits anyone without an authorized
+         * key (or a non-empty secrets.sshd.password), so coming up listening is
+         * safe and lets a freshly flashed device be reached once a key is added. */
+        storageDefault("s.sshd.enabled", 1);
         storageDefault("s.sshd.port", SSHD_PORT_TCP);
         /* ANSI color on the relayed CLI / log streams — off by default so a
          * remote `ssh` session (often piped/scripted) gets clean text; set to 1
@@ -436,11 +439,4 @@ void sshdInit() {
 
     s_task = spawnTask(sshdTask, "sshd", SSHD_TASK_STACK, nullptr,
                        SSHD_TASK_PRIO, 1, STACK_PSRAM);
-
-#if CONFIG_SPANGAP_LCD
-    /* On-device Settings pane (enable switch). lcdRegisterSettings only
-     * populates spangap-lcd's in-RAM menu tree, so it's safe here even though
-     * lcdInit() runs later from the buildable's main.cpp. */
-    sshdLcdRegister();
-#endif
 }

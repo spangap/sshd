@@ -70,7 +70,7 @@ All keys live under the standard spangap storage tree.
 
 | Key                          | Scope     | Default                | Purpose |
 | ---------------------------- | --------- | ---------------------- | ------- |
-| `s.sshd.enabled`             | synced    | `false`                | master switch |
+| `s.sshd.enabled`             | synced    | `true`                 | master switch (admits no one without a key/password) |
 | `s.sshd.port`                | synced    | `22`                   | TCP listen port |
 | `s.sshd.color`               | synced    | `false`                | CLI color — passes `CLI_COLOR`/`CLI_NO_COLOR` to the cli backend |
 | `s.sshd.logcolor`            | synced    | `false`                | log color — passes `LOG_ANSI`/`LOG_NO_ANSI` to the log backend |
@@ -116,7 +116,7 @@ cookie machinery, hardcode the SSH user to `admin`, and drop
 ## Setup
 
 This straddle is ad-hoc: don't list it in the buildable's `straddle.yaml`.
-Pull it in at build time with `--include` so the cost (flash, key
+Pull it in at build time with `--with` so the cost (flash, key
 material, host RSA, etc.) only lands on builds that actually want SSH.
 In the buildable (which already depends on `spangap/spangap-net` —
 everything with network does):
@@ -131,20 +131,21 @@ everything with network does):
 Then build with the straddle included:
 
 ```
-spangap build --include spangap/sshd
+spangap build --with spangap/sshd
 ```
 
-(Slash-form `--include` auto-clones `spangap/sshd` into the workspace
-on first use. Bare `--include sshd` works once it's already a workspace
+(Slash-form `--with` auto-clones `spangap/sshd` into the workspace
+on first use. Bare `--with sshd` works once it's already a workspace
 sibling.)
 
-First boot creates the host seed automatically. Set the rest from the
-spangap CLI:
+First boot creates the host seed automatically, and `s.sshd.enabled` defaults
+on — but the listener admits no one until you authorize a key (or set a
+password). Add one from the spangap CLI:
 
 ```
-set s.sshd.enabled=1
 sshd add ssh-ed25519 AAAAC3NzaC1lZDI1NTE5... mykey
 set secrets.sshd.password=hunter2   # optional, alongside or instead of pubkey
+# set s.sshd.enabled=0   # to turn the listener off entirely
 ```
 
 Then connect: `ssh user@<device>` (interactive shell), `ssh user@<device>

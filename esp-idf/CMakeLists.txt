@@ -1,8 +1,4 @@
 file(GLOB SSHD_SRCS "src/*.cpp")
-# On-device LCD Settings slice. Folded in manually (the activator-driven
-# source-list exclusion isn't implemented yet); its body is wrapped in
-# #if CONFIG_SPANGAP_LCD so it compiles to nothing when spangap-lcd is excluded.
-list(APPEND SSHD_SRCS "lcd/src/sshd_lcd.cpp")
 # Vendored orlp/ed25519 (zlib license; see src/orlp_ed25519/LICENSE.txt).
 # IDF's mbedTLS does not ship Ed25519 sources, so we bring in our own.
 set(ORLP_ED25519_SRCS
@@ -21,9 +17,12 @@ set(ORLP_ED25519_SRCS
 set(MLKEM_NATIVE_SRCS "src/mlkem_native/mlkem_native.c")
 
 include(${CMAKE_CURRENT_LIST_DIR}/spangap_requires.cmake)
+# Conditional sources: esp-idf/conditional/<name>/ is compiled only when <name>
+# is staged. The on-device LCD Settings pane lives in conditional/spangap-lcd/
+# and registers via the when:-gated sshdLcdRegister hook — no #if anywhere.
 idf_component_register(
-    SRCS ${SSHD_SRCS} ${ORLP_ED25519_SRCS} ${MLKEM_NATIVE_SRCS}
-    INCLUDE_DIRS "include"
+    SRCS ${SSHD_SRCS} ${ORLP_ED25519_SRCS} ${MLKEM_NATIVE_SRCS} ${SPANGAP_CONDITIONAL_SRCS}
+    INCLUDE_DIRS "include" ${SPANGAP_CONDITIONAL_INCLUDE_DIRS}
     PRIV_INCLUDE_DIRS
         "src/orlp_ed25519"
         "src/mlkem_native"

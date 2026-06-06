@@ -13,14 +13,17 @@ platforms: [idf]
 requires:
   - spangap/spangap-net
 optional_requires:
-  # sshd.cpp registers a Settings pane via lcdSetting* helpers,
-  # gated on CONFIG_SPANGAP_LCD.
+  # On-device LCD Settings pane — esp-idf/conditional/spangap-lcd/src/sshd_lcd.cpp,
+  # compiled only when spangap-lcd is staged and registered via the
+  # when:-gated sshdLcdRegister init hook below.
   - spangap/spangap-lcd
 # Auto-init: spangap-inside folds this into the buildable's generated
-# spangapInitStraddles() dispatcher, so `--include spangap/sshd` brings the
+# spangapInitStraddles() dispatcher, so `--with spangap/sshd` brings the
 # daemon up with no consumer main.cpp edit. sshdInit() needs net + storage +
 # cli — all up by the time the straddle band runs (net is in the platform band,
-# `requires: spangap/spangap-net` makes it explicit). It then stays idle until
-# s.sshd.enabled is set.
+# `requires: spangap/spangap-net` makes it explicit). s.sshd.enabled defaults on,
+# so it starts listening — but admits no one until a key (or password) is set.
 init:
   - call: sshdInit
+  - call: sshdLcdRegister
+    when: spangap/spangap-lcd

@@ -57,9 +57,4 @@ int  sshdActiveSessions();
  *  (protocol stub stage). `bufLen` should be ≥ 56. */
 bool sshdHostFingerprint(char* buf, size_t bufLen);
 
-/** Register the on-device LCD Settings pane (a single enable switch bound to
- *  s.sshd.enabled). Defined in the esp-idf/lcd/ slice and gated on
- *  CONFIG_SPANGAP_LCD; sshdInit() calls it under the same gate. */
-void sshdLcdRegister();
-
 #endif /* SPANGAP_SSHD_H */
