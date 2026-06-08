@@ -22,3 +22,9 @@ init:
   - call: sshdInit
   - call: sshdLcdRegister
     when: spangap/spangap-lcd
+# Browser auto-registration (parallel to init:): staging sshd into a browser
+# buildable imports registerSshd (sshd/modules/sshd) into straddles.gen.ts and
+# injects the file: dep — the SSH server pane appears under Settings → Services
+# automatically, no consumer edit.
+browser_register:
+  - call: registerSshd
