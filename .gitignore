@@ -23,3 +23,8 @@ staging/
 
 # Auto-generated artifacts (added by maintenance sweep)
 *.pyo
+
+# Build artifacts (spangap-generated)
+esp-idf/build/
+browser/node_modules/
+browser/dist/

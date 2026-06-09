@@ -426,6 +426,12 @@ void sshdInit() {
         storageSet("s.sshd.version", SSHD_VERSION);
     }
 
+    /* Advertise ssh over mDNS (net owns the mechanism; we own this entry). The
+     * value is the port's config key, not a literal, so the advertisement
+     * follows s.sshd.port. Idempotent, so a user dropping it to stop
+     * advertising survives reboot. */
+    storageDefault("s.net.mdns.ssh", "s.sshd.port");
+
     /* Host seed lives forever — generate once on first run, never overwrite. */
     uint8_t seed[32];
     if (!loadHostSeed(seed)) generateHostSeed();
