@@ -29,5 +29,5 @@ void sshdSettingsPane(void* arg) {
  * (spangap/spangap-lcd). Plain C++ linkage to match the generated dispatcher's
  * forward decl. */
 void sshdLcdRegister(void) {
-    lcdRegisterSettings("Net/SSH", "SSH", sshdSettingsPane);
+    lcdRegisterSettings("Internet/SSH", "SSH", sshdSettingsPane);
 }
