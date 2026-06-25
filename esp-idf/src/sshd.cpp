@@ -18,6 +18,7 @@
 #include "its.h"
 #include "storage.h"
 #include "compat.h"
+#include "mem.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -46,7 +47,7 @@ namespace {
 
 TaskHandle_t s_task = nullptr;
 
-sshdses::Session s_sessions[SSHD_MAX_SESSIONS];
+PSRAM_BSS sshdses::Session s_sessions[SSHD_MAX_SESSIONS];
 bool             s_slotInUse[SSHD_MAX_SESSIONS] = {};
 
 /* True once we've sent the one-shot endpoint registration to net. After that
