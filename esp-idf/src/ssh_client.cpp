@@ -98,7 +98,7 @@ struct SshJob {
     /* output (filled by the worker) */
     StreamBufferHandle_t out;    /* worker → CLI: channel output */
     StreamBufferHandle_t in;     /* CLI → worker: keystrokes (interactive shell) */
-    volatile bool userClose;     /* CLI side asks to end (e.g. `~.` or disconnect) */
+    volatile bool userClose;     /* CLI side asks to end (e.g. `..!` or disconnect) */
     volatile bool done;
     int         rc;              /* 0 = login + channel ok */
     char        msg[200];        /* final summary / error line */
@@ -890,7 +890,7 @@ static bool do_channel(Csess& cs) {
     /* Pump: server→client always; client→server (keystrokes via job.in) when
      * interactive. An interactive session never self-terminates on idle — it
      * ends only when the remote closes the channel (`exit`), the user asks to
-     * disconnect (job.userClose, e.g. `~.`), or the transport breaks. */
+     * disconnect (job.userClose, e.g. `..!`), or the transport breaks. */
     bool closed = false;
     bool sentClose = false;
     int idleMs = interactive ? 60 : (cs.job->haveCmd ? 30000 : 8000);

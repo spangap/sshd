@@ -1,8 +1,10 @@
-# sshd — minimal SSH server for spangap.
+# sshd — SSH server and outbound SSH client for spangap.
 #
-# Curve25519 KEX + Ed25519 host/user keys + ChaCha20-Poly1305 only.
-# Hard-wired to two destinations: shell channel → cli, `subsystem log` → log.
-# No port forwarding, no exec, no SFTP, no rekey.
+# Server KEX: mlkem768x25519-sha256 (preferred) + curve25519-sha256.
+# Ed25519 host/user keys, ChaCha20-Poly1305 cipher. The server hard-wires the
+# session channel to three destinations: shell → cli, exec <cmd> → cli (one
+# shot), `subsystem log` → log. The client (ssh) dials out and runs a command
+# or shell. No port forwarding, no SFTP, no rekey.
 schema_version: 1
 name: spangap/sshd
 prefix: sshd
@@ -20,11 +22,22 @@ requires:
 # so it starts listening — but admits no one until a key (or password) is set.
 init:
   - call: sshdInit
-  - call: sshdLcdRegister
-    when: spangap/spangap-lcd
 # Browser auto-registration (parallel to init:): staging sshd into a browser
 # buildable imports registerSshd (sshd/modules/sshd) into straddles.gen.ts and
 # injects the file: dep — the SSH server pane appears under Settings → Services
 # automatically, no consumer edit.
 browser_register:
   - call: registerSshd
+
+# Declarative settings: the LCD pane + the s.sshd.enabled default are generated
+# from this block. web: false — SshdPanel.vue keeps the web leaf (it hosts the
+# authorized-keys editor, which a static descriptor can't express). Enabled by
+# default: sshd never admits anyone without an authorized key, so listening is safe.
+settings:
+  - menu:
+      - { id: network, label: "Internet", placement: 2 }
+      - { id: ssh, label: "SSH" }
+    web: false
+    rows:
+      - section: "SSH server"
+      - switch: { label: "Enabled", key: "s.sshd.enabled", default: 1 }

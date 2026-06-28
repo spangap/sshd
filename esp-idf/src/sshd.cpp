@@ -2,9 +2,9 @@
  * sshd — task scaffolding + storage defaults + CLI.
  *
  * This file is the wiring half: lifecycle, host-seed bootstrap, port (un)register
- * with net, CLI for managing authorized keys. The SSH wire protocol itself
- * (KEX, userauth, channels) lives in sibling translation units and is not
- * implemented yet — incoming connections are accepted, logged, and dropped.
+ * with net, CLI for managing authorized keys, and spawning the outbound client
+ * half (ssh_client.cpp). The SSH wire protocol itself (KEX, userauth, channels)
+ * lives in sshd_session.cpp; an accepted connection is handed to a Session.
  */
 #include "sdkconfig.h"
 
@@ -242,14 +242,14 @@ void cmdSshd(const char* a) {
                   storageGetInt("s.sshd.logcolor", 0) ? "on" : "off");
         char fp[64];
         if (sshdHostFingerprint(fp, sizeof(fp))) cliPrintf("hostkey:  %s\n", fp);
-        else                                     cliPrintf("hostkey:  (pending — protocol not yet implemented)\n");
+        else                                     cliPrintf("hostkey:  (none — run sshd-keygen)\n");
         return;
     }
 
     if (strcmp(a, "fingerprint") == 0) {
         char fp[64];
         if (sshdHostFingerprint(fp, sizeof(fp))) cliPrintf("%s\n", fp);
-        else                                     cliPrintf("(host key derivation pending — wire protocol PR will add it)\n");
+        else                                     cliPrintf("(no host key — run sshd-keygen)\n");
         return;
     }
 
@@ -413,10 +413,6 @@ bool sshdHostFingerprint(char* buf, size_t bufLen) {
 void sshdInit() {
     /* Self-register storage defaults, gated on s.sshd.version. */
     if (storageGetInt("s.sshd.version", 0) < SSHD_VERSION) {
-        /* Enabled by default: sshd never admits anyone without an authorized
-         * key (or a non-empty secrets.sshd.password), so coming up listening is
-         * safe and lets a freshly flashed device be reached once a key is added. */
-        storageDefault("s.sshd.enabled", 1);
         storageDefault("s.sshd.port", SSHD_PORT_TCP);
         /* ANSI color on the relayed CLI / log streams — off by default so a
          * remote `ssh` session (often piped/scripted) gets clean text; set to 1

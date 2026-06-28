@@ -1,170 +1,259 @@
-# sshd
+# sshd — SSH server and client on the device
 
-## What is this?
+**sshd** is two SSH-2 functions in one straddle. The **server** (`sshd`)
+listens on TCP, terminates inbound SSH sessions (up to two concurrently), and
+bridges each session's single channel into the device's existing `cli` or `log`
+services.
+The **client** (`ssh`) dials out to a remote SSH host, authenticates, and runs
+a command or an interactive shell, relaying the output to whoever ran the
+`ssh` command. The two halves share the same wire codec and crypto but are
+otherwise independent.
 
-**sshd** is a minimal SSH-2 server for the [spangap](../spangap) platform.
-It listens on TCP, terminates one SSH session at a time, and bridges the
-session's single channel into the device's existing `cli` or `log` ITS
-services. No port forwarding, no SFTP, no exec-of-arbitrary-shells — just
-"`ssh device`" for an interactive CLI session, "`ssh device 'cmd'`" for one-
-shot command output, and "`ssh device -s log`" for a live log stream.
+The two functions deliberately keep separate storage prefixes: the **server**
+owns `s.sshd.*` and `secrets.sshd.host_seed`; the **client** owns `s.ssh.*`
+and `secrets.ssh.privkey`. A device can run either, both, or neither — the
+client costs nothing until the first outbound `ssh`, and the server admits no
+one until a key is authorized.
 
-Firmware-only — no browser half, not a UI activator.
+## Origins
 
-## Algorithm matrix
-
-Exactly one of each. Modern openssh negotiates these by default; no client
-flags needed.
-
-| | |
-| --- | --- |
-| KEX (preferred)      | `mlkem768x25519-sha256` (post-quantum hybrid, FIPS 203) |
-| KEX (fallback)       | `curve25519-sha256`, `curve25519-sha256@libssh.org` |
-| Host key + user auth | `ssh-ed25519` |
-| Cipher (AEAD)        | `chacha20-poly1305@openssh.com` |
-| MAC                  | implicit (Poly1305) |
-| Compression          | `none` |
-
-No RSA, no DH groups, no AES, no SHA-1, no HMAC-SHA*. The host's flash and
-RAM footprint are sized accordingly: Ed25519 is vendored from
-[orlp/ed25519](https://github.com/orlp/ed25519) (zlib license; see
-`src/orlp_ed25519/LICENSE.txt`) because IDF's mbedTLS does not ship it;
-ML-KEM-768 is vendored from
+The straddle implements SSH-2 directly against the platform's crypto rather
+than wrapping a library. Most primitives come from IDF's mbedTLS
+(ChaCha20-Poly1305, X25519, SHA-256). Two are vendored because mbedTLS doesn't
+ship them: **Ed25519** from [orlp/ed25519](https://github.com/orlp/ed25519)
+(zlib, `src/orlp_ed25519/`) and **ML-KEM-768** from
 [pq-code-package/mlkem-native](https://github.com/pq-code-package/mlkem-native)
-(Apache-2.0 / ISC / MIT tri-licensed; see `src/mlkem_native/LICENSE` and
-`src/mlkem_native/VENDORED.md`) because it isn't part of mbedTLS either;
-ChaCha20-Poly1305 and X25519 come from the platform's existing mbedTLS.
+(Apache-2.0 / ISC / MIT, `src/mlkem_native/`). [INTERNALS.md](INTERNALS.md)
+covers the protocol layer, the vendoring, and the gotchas.
 
-OpenSSH 10 clients warn ("connection is not using a post-quantum key
-exchange algorithm") whenever the negotiated KEX is classical. Advertising
-`mlkem768x25519-sha256` first means that warning stays silent for any
-client ≥ 9.9.
+---
 
-## How a session works
+# The SSH server (`sshd`)
 
-The straddle exposes one TCP port (default 22) and accepts an SSH session.
-After the standard handshake the client may open **one** `session` channel
-and make exactly one of these requests:
+The server exposes one TCP port (default 22) and accepts up to two concurrent
+SSH sessions. It is not a general shell host: after the handshake a client may
+open exactly **one** `session` channel and make one of a small set of requests,
+each hard-wired to an existing ITS backend.
 
 | Channel request | What sshd does | Backend |
 | --- | --- | --- |
-| `pty-req`            | accepted, mode bytes ignored                                    | — (cli does its own line editing) |
-| `shell`              | open ITS connection in `CLI_ANSI` mode and bridge bytes both ways | `cli` |
-| `exec <cmd>`         | open ITS connection in `CLI_LINE` mode, send `<cmd>;\n`, bridge stdout, close on cli's hangup | `cli` |
-| `subsystem log`      | open ITS connection to log; stream new log lines as `CHANNEL_DATA` | `log` |
-| anything else        | `CHANNEL_FAILURE`                                               | — |
+| `pty-req`       | accepted; mode bytes ignored (the cli does its own line editing) | — |
+| `shell`         | open an ITS connection in `CLI_ANSI` mode and bridge bytes both ways | `cli` |
+| `exec <cmd>`    | open an ITS connection in `CLI_LINE` mode, send `<cmd>;\n`, stream the output, close on the cli's hangup | `cli` |
+| `subsystem log` | open an ITS connection to the log service and stream new log lines as `CHANNEL_DATA` | `log` |
+| anything else   | `CHANNEL_FAILURE` | — |
 
-The trailing `;` in the `exec` path is the same convention the serial CLI
-uses ("run this command and hang up the connection") — cli's main loop
-runs the command, drains the outgoing stream, then closes the ITS
-connection cleanly. That gives `ssh device 'pm'` a familiar one-shot
-exec-and-exit experience without needing a real PTY on the device.
+So `ssh device` is an interactive CLI session, `ssh device 'pm'` is a one-shot
+command that prints and exits, and `ssh device -s log` is a live log stream.
+Port forwarding, SFTP, X11, agent forwarding, signals, and a second
+simultaneous channel are all refused — a deliberately small surface.
 
-Any other request (port forwarding, SFTP, X11, signals, agent forwarding,
-multiple simultaneous channels per session) gets `CHANNEL_FAILURE` or is
-ignored. v1 is a deliberately small surface.
+### Algorithm matrix (server)
 
-## Configuration
+Modern OpenSSH negotiates all of these by default; no client flags are needed.
 
-All keys live under the standard spangap storage tree.
+| | |
+| --- | --- |
+| KEX (preferred) | `mlkem768x25519-sha256` (post-quantum hybrid, FIPS 203) |
+| KEX (fallback)  | `curve25519-sha256`, `curve25519-sha256@libssh.org` |
+| Host key + user auth | `ssh-ed25519` |
+| Cipher (AEAD)   | `chacha20-poly1305@openssh.com` |
+| MAC             | implicit (Poly1305) |
+| Compression     | `none` |
 
-| Key                          | Scope     | Default                | Purpose |
-| ---------------------------- | --------- | ---------------------- | ------- |
-| `s.sshd.enabled`             | synced    | `true`                 | master switch (admits no one without a key/password) |
-| `s.sshd.port`                | synced    | `22`                   | TCP listen port |
-| `s.sshd.color`               | synced    | `false`                | CLI color — passes `CLI_COLOR`/`CLI_NO_COLOR` to the cli backend |
-| `s.sshd.logcolor`            | synced    | `false`                | log color — passes `LOG_ANSI`/`LOG_NO_ANSI` to the log backend |
-| `s.sshd.authorized_keys[]`   | synced    | `[]`                   | one `ssh-ed25519 AAAA… optional-comment` per array entry |
-| `secrets.sshd.host_seed`     | secret    | (auto on first boot)   | 32-byte Ed25519 seed, base64 |
-| `secrets.sshd.password`      | secret    | `""`                   | optional fallback (empty = disabled) |
-| `s.net.sshd_port`            | synced    | `0`                    | internal — set by sshd to (de-)open the listener |
+There is no RSA, no finite-field DH, no AES, no SHA-1, no separate HMAC. The
+server advertises `mlkem768x25519-sha256` first so an OpenSSH 9.9+ client
+selects it — and OpenSSH 10's "connection is not using a post-quantum key
+exchange algorithm" warning stays silent. Older clients fall back to classical
+curve25519.
 
-`secrets.*` is persisted on flash but **never** synced to the browser, so
-the host seed and password stay device-local.
+### Storage (server)
 
-## CLI
+`s.sshd.*` is user/browser-writable configuration; `secrets.sshd.host_seed` is
+device-local and never synced to the browser. `s.net.sshd_port` and
+`s.net.mdns.ssh` are net-owned keys that sshd drives (see notes below).
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `s.sshd.enabled` | `true` | Master switch. Live (no reboot) — flipping it (de)opens the listener at once. The default is owned by this straddle's `settings:` block. |
+| `s.sshd.port` | `22` | TCP listen port. |
+| `s.sshd.color` | `false` | Pass `CLI_COLOR`/`CLI_NO_COLOR` to the cli backend (off so a piped/scripted `ssh` gets clean text). |
+| `s.sshd.logcolor` | `false` | Pass `LOG_ANSI`/`LOG_NO_ANSI` to the log backend. |
+| `s.sshd.authorized_keys[]` | `[]` | One `ssh-ed25519 AAAA… optional-comment` per array entry. |
+| `secrets.sshd.host_seed` | (generated on first boot) | 32-byte Ed25519 host-key seed, base64. |
+| `s.net.sshd_port` | `0` | net-owned. sshd writes this (`s.sshd.port` when enabled, else `0`) to open/close the listener; net re-runs its listeners on the change. |
+| `s.net.mdns.ssh` | `"s.sshd.port"` | net-owned. sshd defaults this so the `_ssh._tcp` mDNS record advertises the current `s.sshd.port`. Drop it to stop advertising. |
+
+The password is **not** an sshd secret — password auth is delegated to
+spangap-core's `auth` (see below), so there is no `secrets.sshd.password`.
+
+### CLI (server)
 
 ```
-sshd                       # usage
-sshd status                # enabled, port, sessions, key count, host fingerprint
-sshd fingerprint           # SHA256:base64 of the host Ed25519 pubkey, openssh-format
-sshd keys                  # list authorized keys with their comments
-sshd add <ssh-ed25519 …>   # append one openssh-format pubkey to the array
-sshd del <idx>             # remove the key at index
+sshd                       show state: enabled, port, sessions, key count, color, host fingerprint
+sshd enable                start the server (s.sshd.enabled=1)
+sshd disable               stop the server (s.sshd.enabled=0)
+sshd fingerprint           SHA256:base64 of the host Ed25519 public key (openssh format)
+sshd keys                  list authorized keys with their comments
+sshd add <ssh-ed25519 …>   append one openssh-format pubkey to the array
+sshd del <idx>             remove the key at index
+sshd reset                 force-close all active sessions
+
+sshd-keygen                regenerate the host key (secrets.sshd.host_seed) — destructive
+sshd-showkey               print the host public key (ssh-ed25519 …) with the hostname appended
 ```
 
-The host fingerprint is computed over the full `K_S` blob (`ssh-string(
-"ssh-ed25519") || ssh-string(pub32)`), matching what openssh prints — not
-over the bare 32-byte pubkey.
+`sshd-keygen` and `sshd-showkey` are top-level commands, not `sshd`
+subcommands. Regenerating the host key invalidates the entry every client has
+in its `known_hosts` for this device, so they must re-trust it.
 
-## Authentication
+The host fingerprint is computed over the full `K_S` blob
+(`ssh-string("ssh-ed25519") || ssh-string(pub32)`), matching what OpenSSH
+prints — not over the bare 32-byte pubkey.
 
-Currently:
+### Authentication (server)
 
-- **publickey** (`ssh-ed25519` only) — checked against every entry in
-  `s.sshd.authorized_keys`.
-- **password** — checked against `secrets.sshd.password` if non-empty.
+Two methods, tried by the client in OpenSSH's usual order:
 
-The username sent by the client is recorded but **not enforced**; any
-username succeeds as long as the password or pubkey matches.
+- **publickey** (`ssh-ed25519` only) — the offered key is matched against every
+  entry in `s.sshd.authorized_keys`, then the signature is verified.
+- **password** — delegated to spangap-core's `auth`: the supplied password is
+  checked against the **`admin`** realm via `authLogin`. Set or change it with
+  `auth passwd admin <pw>` (or the browser settings panel). The realm/password
+  store is shared with the web login flow; there is no sshd-private password.
 
-(A future revision is expected to share spangap-core's `auth` realm-and-
-cookie machinery, hardcode the SSH user to `admin`, and drop
-`secrets.sshd.password` in favour of `authLogin(pw, "admin")`. See
-[INTERNALS.md](INTERNALS.md) for the migration sketch.)
+The username the client sends is recorded but **not enforced** — any username
+succeeds as long as the key or password matches. A key that isn't authorized
+gets `USERAUTH_FAILURE` (the client falls back to its next method or fails).
 
-## Setup
+### Setup and authorizing access
 
-This straddle is ad-hoc: don't list it in the buildable's `straddle.yaml`.
-Pull it in at build time with `--with` so the cost (flash, key
-material, host RSA, etc.) only lands on builds that actually want SSH.
-In the buildable (which already depends on `spangap/spangap-net` —
-everything with network does):
-
-```cpp
-// app_main, after netInit()
-#if CONFIG_STRADDLE_SSHD
-    sshdInit();
-#endif
-```
-
-Then build with the straddle included:
+Include the straddle in a build and it starts automatically — there is no init
+call to add:
 
 ```
 spangap build --with spangap/sshd
 ```
 
-(Slash-form `--with` auto-clones `spangap/sshd` into the workspace
-on first use. Bare `--with sshd` works once it's already a workspace
-sibling.)
+(Slash-form `--with` auto-clones `spangap/sshd` into the workspace on first
+use; bare `--with sshd` works once it's a workspace sibling. The straddle
+already requires `spangap/spangap-net`, which any networked build has.)
 
-First boot creates the host seed automatically, and `s.sshd.enabled` defaults
-on — but the listener admits no one until you authorize a key (or set a
-password). Add one from the spangap CLI:
+First boot generates the host seed automatically and `s.sshd.enabled` defaults
+on, but the listener admits no one until you authorize a key (or set a
+password). Paste your public key into the device's serial CLI (the monitor
+window):
 
 ```
 sshd add ssh-ed25519 AAAAC3NzaC1lZDI1NTE5... mykey
-set secrets.sshd.password=hunter2   # optional, alongside or instead of pubkey
-# set s.sshd.enabled=0   # to turn the listener off entirely
+auth passwd admin hunter2     # optional password path, alongside or instead of a key
+sshd disable                  # to turn the listener off entirely
 ```
 
 Then connect: `ssh user@<device>` (interactive shell), `ssh user@<device>
 '<cmd>'` (one-shot), `ssh user@<device> -s log` (live log subsystem).
 
+When driving the device from the build host, `spangap cli` prefers SSH and
+bootstraps this for you — it generates `~/.ssh/id_ed25519` if missing and, if
+the key is refused, prints the exact `sshd add <pubkey>` line to paste in the
+monitor window. The host side of that (the `spangap monitor` bridge, the
+`.spangap-tcp` device-address file, the ssh→TCP-CLI fallback) is documented in
+[spangap/build-system/README.md](../spangap/build-system/README.md).
+
+---
+
+# The SSH client (`ssh`)
+
+The client dials a remote SSH-2 host, authenticates as an outbound client, and
+runs a command or an interactive login shell. It is a sibling of the server in
+the same straddle and reuses the server's wire codec and crypto wholesale; only
+the client-role state machine and the CLI front-end are its own.
+
+```
+ssh [user@]host [command]      connect, authenticate, run command (or a login shell), stream output
+  -p <port>                    port override (default s.ssh.port, 22)
+```
+
+With a `command` it runs one remote command and exits (the device's `cli`
+relays the output). With no command it opens an interactive login shell — type
+`..!` at the start of a line to disconnect. If no `user@` is given, the default
+is `s.ssh.user` (`root`). A single outbound session runs at a time.
+
+### Algorithm matrix (client)
+
+| | |
+| --- | --- |
+| KEX      | `curve25519-sha256`, `curve25519-sha256@libssh.org` (classical) |
+| Host key | `ssh-ed25519`, verified, with trust-on-first-use `known_hosts` |
+| User auth | `publickey` (`ssh-ed25519`), then `keyboard-interactive`, then `password` |
+| Cipher   | `chacha20-poly1305@openssh.com` |
+| Compression | `none` |
+
+The client offers classical curve25519 KEX only (the post-quantum path is
+server-side). It interoperates with default-configuration OpenSSH; it cannot
+reach a host that presents only an RSA or ECDSA host key, or that offers
+neither `chacha20-poly1305` nor a `curve25519` KEX.
+
+### known_hosts (trust on first use)
+
+The first time the client reaches a host it verifies the server's signature
+over the exchange hash with the presented host key, then records
+`"<host> SHA256:<fingerprint>"` in `s.ssh.known_hosts[]`. On every later
+connection the fingerprint must match. If a host's key **changes**, the client
+refuses the connection and tells you which `s.ssh.known_hosts.<idx>` entry to
+clear to re-trust it.
+
+### Storage (client)
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `s.ssh.user` | `"root"` | Default username when `ssh host` is given without `user@`. |
+| `s.ssh.port` | `22` | Default TCP port for outbound connections. |
+| `s.ssh.password` | `""` | Password for password / keyboard-interactive auth. Empty → no password auth (the client prompts interactively only if there's also no key). |
+| `s.ssh.pubkey` | `""` | Our openssh-format public-key line, written by `ssh-keygen`. |
+| `s.ssh.known_hosts[]` | `[]` | One `"<host> SHA256:<fp>"` per trusted host. |
+| `secrets.ssh.privkey` | `""` | 32-byte Ed25519 user-key seed, base64. Device-local, never synced. |
+
+### CLI (client)
+
+```
+ssh [user@]host [cmd]   connect and run a command or a login shell (see above)
+ssh-keygen              generate a new Ed25519 user key (secrets.ssh.privkey + s.ssh.pubkey)
+ssh-showkey             print the public user key (s.ssh.pubkey) with the hostname appended
+```
+
+To authenticate by key, run `ssh-keygen` once, then `ssh-showkey` and add the
+printed line to the remote host's `authorized_keys`. With a user key present
+the client uses publickey auth; with `s.ssh.password` set it falls through to
+keyboard-interactive then password. With neither configured, `ssh` prompts for
+a password interactively.
+
+---
+
+## Browser
+
+The server contributes a settings pane (Settings → SSH) with an
+authorized-keys editor — `browser/src/panels/SshdPanel.vue` and
+`browser/src/modules/sshd.ts`, auto-registered when staged into a browser
+build. There is no browser UI for the client.
+
+## Dependencies
+
+- [spangap-net](../spangap-net) — the TCP listener (inbound) and outbound dial
+  (`NET_PORT_TCP_DIAL`), plus the mDNS advertisement mechanism.
+- [spangap-core](../spangap-core) — ITS, storage, logging, the CLI, and `auth`
+  (the password realm the server checks against).
+
 ## What this straddle does NOT own
 
-- HTTP / HTTPS / WebDAV / WebSocket — in [spangap-web](../spangap-web).
-- The browser-side terminal / log viewer — also in spangap-web. (sshd is
-  firmware-only; the browser UI runs against the same `cli` / `log`
-  backends over WebRTC, not over SSH.)
-- The `cli` and `log` services themselves — in
-  [spangap-core](../spangap-core).
-- Auth realms / cookies — currently in spangap-web, planned to move into
-  spangap-core.
+- HTTP / HTTPS / WebDAV / WebSocket — [spangap-web](../spangap-web).
+- The browser-side terminal and log viewer — also spangap-web; they run against
+  the same `cli` / `log` backends over WebRTC, not over SSH.
+- The `cli` and `log` services, and the `auth` realm store — spangap-core.
+- The host-side `spangap cli` bridge and device-address files —
+  [spangap/build-system](../spangap/build-system).
 
 ## Read next
 
-- [INTERNALS.md](INTERNALS.md) — protocol layer, ITS plumbing, the gotchas
-  worth knowing if you ever debug this.
-- Platform-wide [spangap/INTERNALS.md](../spangap/INTERNALS.md) for ITS
-  patterns, ESP-IDF specifics.
+- [INTERNALS.md](INTERNALS.md) — the server and client state machines, the
+  crypto and KEX wire formats, the ITS plumbing invariants, and the pitfalls.
