@@ -921,7 +921,7 @@ static bool open_backend_with_mode(Session& s, int sessionSlot, cli_mode_t cliMo
          * the connect-time prompt so it doesn't prefix the command output. The
          * interactive shell (CLI_ANSI) keeps its prompt. */
         uint8_t noPrompt = (cliMode == CLI_LINE) ? 1 : 0;
-        cli_connect_t cc = { cliMode, 0, color, noPrompt };
+        cli_connect_t cc = { cliMode, 0, color, noPrompt, /*login*/0 };
         s.backendHandle = itsConnect("cli", CLI_PORT_TCP,
                                      &cc, sizeof(cc), pdMS_TO_TICKS(500),
                                      sessionSlot,
