@@ -337,7 +337,13 @@ dial port.
 - **Client KEX is classical curve25519 only** — no post-quantum, no RSA/ECDSA
   host-key verification, no AES. It reaches default-configured OpenSSH but not a
   host that lacks `chacha20-poly1305` or a `curve25519` KEX, nor one presenting
-  only an RSA/ECDSA host key.
+  only an RSA/ECDSA host key. Closing these gaps needs no new vendored code:
+  `ecdsa-sha2-nistp256` / `rsa-sha2-256/512` host-key *verify* come from the
+  already-linked mbedTLS (ECP and RSA); `aes256-gcm@openssh.com` / `aes128-ctr`
+  likewise from mbedTLS, with ESP32 hardware AES; and client-side
+  `mlkem768x25519` needs only keygen+decapsulation enabled in the existing
+  mlkem-native monobuild config (it's currently compiled encapsulation-only for
+  the server role).
 - **Shell-channel newline translation.** cli emits bare `\n`, which staircases
   in a raw-mode SSH terminal until `stty sane`. A per-byte `\n`→`\r\n` on
   outbound CHANNEL_DATA when a pty-req was accepted would fix it.
