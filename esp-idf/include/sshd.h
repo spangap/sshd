@@ -44,6 +44,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "service.h"
+
 /** sshd's inbound TCP port also serves as its ITS server port number
  *  (net's convention: passes the TCP port through as the itsPort). */
 static constexpr uint16_t SSHD_PORT_TCP = 22;
@@ -53,7 +55,10 @@ static constexpr uint16_t SSHD_PORT_TCP = 22;
  *  registers the server CLI, spawns the outbound client half, and starts the
  *  `sshd` task. The task opens its ITS server port and registers with net, but
  *  only listens while s.sshd.enabled is true. */
-void sshdInit();
+class SshdService : public Service {
+public:
+    void onInit() override;
+};
 
 /** Number of active SSH sessions. For `top`/status. */
 int  sshdActiveSessions();

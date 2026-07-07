@@ -14,15 +14,15 @@ browser: browser
 platforms: [idf]
 requires:
   - spangap/spangap-net
-# Auto-init: spangap-inside folds this into the buildable's generated
-# spangapInitStraddles() dispatcher, so `--with spangap/sshd` brings the
-# daemon up with no consumer main.cpp edit. sshdInit() needs net + storage +
-# cli — all up by the time the straddle band runs (net is in the platform band,
-# `requires: spangap/spangap-net` makes it explicit). s.sshd.enabled defaults on,
-# so it starts listening — but admits no one until a key (or password) is set.
-init:
-  - call: sshdInit
-# Browser auto-registration (parallel to init:): staging sshd into a browser
+# Auto-init: spangap-inside folds this into the buildable's generated service
+# registry, so `--with spangap/sshd` brings the daemon up with no consumer
+# main.cpp edit. SshdService::onInit() needs net + storage + cli — all up by the
+# time the straddle band runs (net is in the platform band, `requires:
+# spangap/spangap-net` makes it explicit). s.sshd.enabled defaults on, so it
+# starts listening — but admits no one until a key (or password) is set.
+services:
+  - { class: SshdService, header: sshd.h }
+# Browser auto-registration (parallel to services:): staging sshd into a browser
 # buildable imports registerSshd (sshd/modules/sshd) into straddles.gen.ts and
 # injects the file: dep — the SSH server pane appears under Settings → Services
 # automatically, no consumer edit.

@@ -34,7 +34,7 @@ both roles, against the platform's crypto. There is no SSH library underneath.
 ```
 esp-idf/
 ├── CMakeLists.txt              # MBEDTLS_ALLOW_PRIVATE_ACCESS for the X25519 wrapper; pulls in mlkem-native
-├── include/sshd.h              # server public API (sshdInit, sshdHostFingerprint, sshdActiveSessions)
+├── include/sshd.h              # server public API (SshdService, sshdHostFingerprint, sshdActiveSessions)
 └── src/
     ├── sshd.cpp                # server task, storage defaults, server CLI; spawns the client half
     ├── sshd_session.{h,cpp}    # server per-connection state machine
@@ -45,8 +45,8 @@ esp-idf/
     └── mlkem_native/           # vendored ML-KEM-768 (Apache-2.0 / ISC / MIT; see VENDORED.md)
 ```
 
-Everything compiles into one IDF component. `sshdInit()` (called by the
-generated init dispatcher, no consumer edit) installs storage defaults,
+Everything compiles into one IDF component. `SshdService::onInit()` (called by
+the generated service registry, no consumer edit) installs storage defaults,
 generates the host seed on first run, registers the server CLI, calls
 `sshClientInit()` for the client half, and spawns the server task.
 
@@ -344,7 +344,7 @@ dial port.
 
 ## 9. Code-cleanup notes
 
-- **`s.sshd.version`** gates the one-time `storageDefault` block in `sshdInit`.
+- **`s.sshd.version`** gates the one-time `storageDefault` block in `SshdService::onInit`.
   Config-version gates run against the project's no-migrations policy; the
   default block can be unconditional. Out of scope for docs, noted for a future
   code pass.

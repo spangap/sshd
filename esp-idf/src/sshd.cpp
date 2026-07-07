@@ -410,7 +410,7 @@ bool sshdHostFingerprint(char* buf, size_t bufLen) {
     return true;
 }
 
-void sshdInit() {
+void SshdService::onInit() {
     /* Self-register storage defaults, gated on s.sshd.version. */
     if (storageGetInt("s.sshd.version", 0) < SSHD_VERSION) {
         storageDefault("s.sshd.port", SSHD_PORT_TCP);

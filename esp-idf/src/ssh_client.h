@@ -29,7 +29,7 @@
 #define SPANGAP_SSH_CLIENT_H
 
 /** Register the ssh / ssh-keygen / ssh-showkey CLI commands and spawn the
- *  client worker task. Called from sshdInit(). */
+ *  client worker task. Called from SshdService::onInit(). */
 void sshClientInit();
 
 #endif /* SPANGAP_SSH_CLIENT_H */
