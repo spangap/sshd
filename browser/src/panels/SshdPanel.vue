@@ -21,7 +21,7 @@
 
     <div class="row q-gutter-x-sm q-mt-xs">
       <q-btn dense no-caps label="+" class="key-btn" @click="openAdd" />
-      <q-btn dense no-caps label="−" class="key-btn" :disable="selectedIdx < 0" @click="removeKey" />
+      <q-btn dense no-caps class="key-btn" :disable="selectedIdx < 0" @click="removeKey"><IconTrash /></q-btn>
     </div>
 
     <q-dialog v-model="showAdd" persistent>
@@ -63,6 +63,7 @@ import { computed, ref, watch } from 'vue'
 import { useDeviceStore } from 'spangap-browser/stores/device'
 import SettingToggle from 'spangap-browser/components/SettingToggle.vue'
 import PanelHeading from 'spangap-browser/components/PanelHeading.vue'
+import IconTrash from 'spangap-browser/components/IconTrash.vue'
 
 const device = useDeviceStore()
 
