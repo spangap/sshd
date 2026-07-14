@@ -413,6 +413,7 @@ bool sshdHostFingerprint(char* buf, size_t bufLen) {
 void SshdService::onInit() {
     /* Self-register storage defaults, gated on s.sshd.version. */
     if (storageGetInt("s.sshd.version", 0) < SSHD_VERSION) {
+        storageBegin();
         storageDefault("s.sshd.port", SSHD_PORT_TCP);
         /* ANSI color on the relayed CLI / log streams — off by default so a
          * remote `ssh` session (often piped/scripted) gets clean text; set to 1
@@ -421,6 +422,7 @@ void SshdService::onInit() {
         storageDefault("s.sshd.logcolor", 0);
         storageDefaultTree("s.sshd", "{\"authorized_keys\":[]}");
         storageSet("s.sshd.version", SSHD_VERSION);
+        storageEnd();
     }
 
     /* Advertise ssh over mDNS (net owns the mechanism; we own this entry). The

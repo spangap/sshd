@@ -1272,8 +1272,10 @@ static void cmd_ssh_showkey(const char* a) {
 } /* namespace */
 
 void sshClientInit() {
+    storageBegin();
     storageDefault("s.ssh.port", 22);
     storageDefaultTree("s.ssh", "{\"known_hosts\":[]}");
+    storageEnd();
 
     cliRegisterCmd("ssh", cmd_ssh);
     cliRegisterCmd("ssh-keygen", cmd_ssh_keygen);
