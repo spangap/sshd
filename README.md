@@ -230,12 +230,15 @@ a password interactively.
 
 ---
 
-## Browser
+## Settings UI
 
-The server contributes a settings pane (Settings → SSH) with an
-authorized-keys editor — `browser/src/panels/SshdPanel.vue` and
-`browser/src/modules/sshd.ts`, auto-registered when staged into a browser
-build. There is no browser UI for the client.
+The server contributes a settings pane (Settings → Internet → SSH) with the
+authorized-keys editor, described by the `settings:` block in `straddle.yaml`
+and lowered to both surfaces. The key list is a collection: `sshd.cpp` owns
+every mutation through the `sshd.key.*` sentinels and validates there — "only
+ssh-ed25519", "not valid base64", "already authorized" are stated once, by the
+code that needs them, and reach the operator as text on `sshd.key.error`. There
+is no settings UI for the client.
 
 ## Dependencies
 

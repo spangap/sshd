@@ -648,7 +648,7 @@ static void handle_newkeys(Session& s) {
 static bool authorized_pub_matches(const uint8_t pub[32]) {
     int n = storageArrayCount("s.sshd.authorized_keys.");
     for (int i = 0; i < n; i++) {
-        char k[64]; snprintf(k, sizeof(k), "s.sshd.authorized_keys.%d", i);
+        char k[80]; snprintf(k, sizeof(k), "s.sshd.authorized_keys.%d.line", i);
         std::string v = storageGetStr(k, "");
         if (v.compare(0, 12, "ssh-ed25519 ") != 0) continue;
         /* Find the base64 blob between the first two spaces. */

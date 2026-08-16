@@ -10,7 +10,6 @@ name: spangap/sshd
 prefix: sshd
 version: 0.0.0
 firmware: esp-idf
-browser: browser
 platforms: [idf]
 requires:
   - spangap/spangap-net
@@ -22,22 +21,33 @@ requires:
 # starts listening — but admits no one until a key (or password) is set.
 services:
   - { class: SshdService, header: sshd.h }
-# Browser auto-registration (parallel to services:): staging sshd into a browser
-# buildable imports registerSshd (sshd/modules/sshd) into straddles.gen.ts and
-# injects the file: dep — the SSH server pane appears under Settings → Services
-# automatically, no consumer edit.
-browser_register:
-  - call: registerSshd
 
-# Declarative settings: the LCD pane + the s.sshd.enabled default are generated
-# from this block. web: false — SshdPanel.vue keeps the web leaf (it hosts the
-# authorized-keys editor, which a static descriptor can't express). Enabled by
+# Declarative settings: both surfaces + the s.sshd.enabled default are generated
+# from this block, the authorized-key editor included — sshd.cpp owns every
+# mutation through the sshd.key.* sentinels and validates there. Enabled by
 # default: sshd never admits anyone without an authorized key, so listening is safe.
 settings:
-  - menu:
-      - { id: network, label: "Internet", placement: 2 }
-      - { id: ssh, label: "SSH" }
-    web: false
+  - at:
+      - { id: network, label: "Internet", order: 2 }
+      - { id: ssh, label: "SSH", short: "SSH" }
     rows:
       - section: "SSH server"
       - switch: { label: "Enabled", key: "s.sshd.enabled", default: 1 }
+      # The key store is an array of per-field objects; sshd.cpp owns every
+      # mutation through the sshd.key.* sentinels and validates there, so a
+      # rejected key comes back as a sentence rather than as a UI rule.
+      - list:
+          label: "Authorized keys"
+          key: s.sshd.authorized_keys
+          id: id
+          item: "{label}"
+          empty: "No authorized keys — add an ssh-ed25519 public key to allow logins."
+          cmd: sshd.key
+          add:
+            - label: "Add SSH key"
+              form:
+                title: "Add SSH key"
+                submit: "Add"
+                fields:
+                  - text: { label: "Key", field: line, placeholder: "ssh-ed25519 AAAA… comment" }
+          remove: { confirm: "Remove {label}?" }

@@ -27,9 +27,13 @@
 #include "esp_system.h"
 #include "mbedtls/base64.h"
 
+#include <cJSON.h>
+
 #include <cstring>
 #include <cstdio>
+#include <cctype>
 #include <string>
+#include <vector>
 
 #define SSHD_VERSION 1
 
@@ -188,12 +192,188 @@ void sshdTask(void* /*arg*/) {
 
 /* ---------- CLI: authorized_keys management + status ---------- */
 
-bool keyTypeOk(const char* line) {
-    return strncmp(line, "ssh-ed25519 ", 12) == 0;
-}
+/* ---- the authorized-key store ----
+ *
+ * s.sshd.authorized_keys is an array of per-field objects:
+ *
+ *   { "id": "3", "line": "ssh-ed25519 AAAA… laptop",
+ *     "label": "ssh-ed25519 …7xK2mQ  laptop" }
+ *
+ * `line` is what the auth path compares; `label` is the FINISHED display text,
+ * composed here so neither settings surface has to parse a key line to render a
+ * row. `id` is a small opaque number handed out on add — the line itself is far
+ * too long to carry through a sentinel, and an index would be invalidated by the
+ * very removals it identifies.
+ *
+ * Every mutation arrives on an sshd.key.* sentinel and is validated HERE. A
+ * rejection is a sentence written to sshd.key.error, which the add form shows;
+ * that is why there is no key parsing in any UI. */
 
 int keyCount() {
     return storageArrayCount("s.sshd.authorized_keys.");
+}
+
+std::string keyField(int idx, const char* field) {
+    char k[80];
+    snprintf(k, sizeof(k), "s.sshd.authorized_keys.%d.%s", idx, field);
+    return storageGetStr(k, "");
+}
+
+/** The row text for a key line: type, the tail of the blob (enough to tell two
+ *  keys apart, short enough to fit a settings row) and the comment. */
+std::string keyLabel(const std::string& line) {
+    std::string type, blob, comment;
+    size_t sp1 = line.find(' ');
+    if (sp1 == std::string::npos) return line;
+    type = line.substr(0, sp1);
+    size_t sp2 = line.find(' ', sp1 + 1);
+    blob = (sp2 == std::string::npos) ? line.substr(sp1 + 1)
+                                      : line.substr(sp1 + 1, sp2 - sp1 - 1);
+    if (sp2 != std::string::npos) comment = line.substr(sp2 + 1);
+    std::string tail = blob.size() > 12 ? "\xE2\x80\xA6" + blob.substr(blob.size() - 12) : blob;
+    return type + " " + tail + (comment.empty() ? "" : "  " + comment);
+}
+
+/** Why this key line is unacceptable, or "" if it is fine. The one place that
+ *  decides — the CLI, the web form and the on-device form all land here. */
+std::string keyRejection(const std::string& raw) {
+    std::string line = raw;
+    while (!line.empty() && isspace((unsigned char)line.front())) line.erase(0, 1);
+    while (!line.empty() && isspace((unsigned char)line.back()))  line.pop_back();
+    if (line.empty()) return "Empty.";
+    size_t sp1 = line.find(' ');
+    if (sp1 == std::string::npos) return "Expected: ssh-ed25519 <base64> [comment]";
+    if (line.compare(0, sp1, "ssh-ed25519") != 0)
+        return "Only ssh-ed25519 keys are accepted (got \"" + line.substr(0, sp1) + "\").";
+    size_t sp2 = line.find(' ', sp1 + 1);
+    std::string blob = (sp2 == std::string::npos) ? line.substr(sp1 + 1)
+                                                  : line.substr(sp1 + 1, sp2 - sp1 - 1);
+    for (char c : blob)
+        if (!isalnum((unsigned char)c) && c != '+' && c != '/' && c != '=')
+            return "Key body is not valid base64.";
+    /* An ed25519 blob is string("ssh-ed25519") || string(pub32) = 51 bytes,
+     * which is 68 base64 characters. Anything much shorter is not one. */
+    if (blob.size() < 64) return "Key body looks too short for ed25519.";
+    return "";
+}
+
+/** Whatever the caller submitted, normalized to the line we store. */
+std::string keyNormalize(const std::string& raw) {
+    std::string line = raw;
+    while (!line.empty() && isspace((unsigned char)line.front())) line.erase(0, 1);
+    while (!line.empty() && isspace((unsigned char)line.back()))  line.pop_back();
+    return line;
+}
+
+/** Write one item's three fields at `idx`. Caller holds the transaction. */
+void keyWrite(int idx, const std::string& id, const std::string& line) {
+    char k[80];
+    snprintf(k, sizeof(k), "s.sshd.authorized_keys.%d.id",    idx); storageSet(k, id.c_str());
+    snprintf(k, sizeof(k), "s.sshd.authorized_keys.%d.line",  idx); storageSet(k, line.c_str());
+    snprintf(k, sizeof(k), "s.sshd.authorized_keys.%d.label", idx); storageSet(k, keyLabel(line).c_str());
+}
+
+/** The next unused id. Small and monotonic within the current set — ids are
+ *  only ever compared, never ordered or persisted anywhere else. */
+std::string keyNextId() {
+    int best = 0, n = keyCount();
+    for (int i = 0; i < n; i++) {
+        int v = atoi(keyField(i, "id").c_str());
+        if (v > best) best = v;
+    }
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%d", best + 1);
+    return buf;
+}
+
+/** Accepted-mutation ack, shared by the sshd.key.* sentinels: the open form
+ *  closes when this moves. Monotonic per boot — never a read-increment, since
+ *  reads see the committed tree behind the actor's queue. */
+void keyAck() {
+    static int ack = 0;
+    storageSet("sshd.key.done", ++ack);
+}
+
+int keyIndexOfId(const std::string& id) {
+    int n = keyCount();
+    for (int i = 0; i < n; i++) if (keyField(i, "id") == id) return i;
+    return -1;
+}
+
+/** Append, or explain why not. The reason lands on sshd.key.error and stays
+ *  there until the next successful write clears it. */
+void keyAdd(const std::string& raw) {
+    std::string line = keyNormalize(raw);
+    std::string why  = keyRejection(line);
+    if (!why.empty()) { storageSet("sshd.key.error", why.c_str()); return; }
+    int n = keyCount();
+    for (int i = 0; i < n; i++)
+        if (keyField(i, "line") == line) {
+            storageSet("sshd.key.error", "That key is already authorized.");
+            return;
+        }
+    storageBegin();
+    keyWrite(n, keyNextId(), line);
+    storageSet("sshd.key.error", "");
+    storageEnd();
+    keyAck();
+}
+
+/** Drop the key with this id, compacting the array so it stays contiguous. */
+void keyRemove(const std::string& id) {
+    int idx = keyIndexOfId(id), n = keyCount();
+    if (idx < 0) { storageSet("sshd.key.error", "No such key."); return; }
+    storageBegin();
+    for (int i = idx; i < n - 1; i++)
+        keyWrite(i, keyField(i + 1, "id"), keyField(i + 1, "line"));
+    char tail[80];
+    snprintf(tail, sizeof(tail), "s.sshd.authorized_keys.%d", n - 1);
+    storageUnset(tail);
+    storageSet("sshd.key.error", "");
+    storageEnd();
+    keyAck();
+}
+
+/** One-time move from the old shape (an array of bare key-line strings) to the
+ *  per-field objects a collection binds. Detected by probing element 0 for a
+ *  scalar; the new shape answers "" there and its line under `.0.line`. */
+void keyMigrate() {
+    int n = keyCount();
+    if (n == 0) return;
+    std::vector<std::string> lines;
+    for (int i = 0; i < n; i++) {
+        char k[80];
+        snprintf(k, sizeof(k), "s.sshd.authorized_keys.%d", i);
+        std::string flat = storageGetStr(k, "");
+        if (flat.empty()) return;     /* already objects — nothing to move */
+        lines.push_back(flat);
+    }
+    storageBegin();
+    storageDeleteTree("s.sshd.authorized_keys");
+    for (size_t i = 0; i < lines.size(); i++) {
+        char buf[12];
+        snprintf(buf, sizeof(buf), "%d", (int)i + 1);
+        keyWrite((int)i, buf, lines[i]);
+    }
+    storageEnd();
+    info("migrated %d authorized key(s) to the per-field shape\n", (int)lines.size());
+}
+
+/* The sentinels the settings collection writes. The UI never touches the array
+ * itself, so this is the only writer and validation cannot be bypassed. */
+void keySentinel(const char* key, const char* val) {
+    if (!val || !*val) return;
+    if (strcmp(key, "sshd.key.add") == 0) {
+        /* The add form submits its fields as one JSON object. */
+        cJSON* o = cJSON_Parse(val);
+        cJSON* line = o ? cJSON_GetObjectItem(o, "line") : nullptr;
+        keyAdd(cJSON_IsString(line) ? line->valuestring : "");
+        if (o) cJSON_Delete(o);
+        storageSet("sshd.key.add", "");
+    } else if (strcmp(key, "sshd.key.remove") == 0) {
+        keyRemove(val);
+        storageSet("sshd.key.remove", "");
+    }
 }
 
 void cmdSshd(const char* a) {
@@ -205,7 +385,7 @@ void cmdSshd(const char* a) {
         cliPrintf("%-*s SHA256 of host public key\n", CLI_HELP_COL, "sshd fingerprint");
         cliPrintf("%-*s list authorized keys\n", CLI_HELP_COL, "sshd keys");
         cliPrintf("%-*s append an ssh-ed25519 public key\n", CLI_HELP_COL, "sshd add <key>");
-        cliPrintf("%-*s remove key at index\n", CLI_HELP_COL, "sshd del <idx>");
+        cliPrintf("%-*s remove the key with this id\n", CLI_HELP_COL, "sshd del <id>");
         cliPrintf("%-*s force-close all active sessions\n", CLI_HELP_COL, "sshd reset");
         return;
     }
@@ -256,53 +436,28 @@ void cmdSshd(const char* a) {
     if (strcmp(a, "keys") == 0) {
         int n = keyCount();
         if (n == 0) { cliPrintf("(no authorized keys)\n"); return; }
-        for (int i = 0; i < n; i++) {
-            char k[64]; snprintf(k, sizeof(k), "s.sshd.authorized_keys.%d", i);
-            std::string v = storageGetStr(k, "");
-            /* Show index + key-type + comment (the trailing field). The full
-             * blob can be very long; print prefix + comment for at-a-glance. */
-            const char* sp1 = strchr(v.c_str(), ' ');
-            const char* sp2 = sp1 ? strchr(sp1 + 1, ' ') : nullptr;
-            cliPrintf("[%d] %.*s  %s\n",
-                      i,
-                      sp1 ? (int)(sp1 - v.c_str()) : (int)v.size(), v.c_str(),
-                      sp2 ? sp2 + 1 : "(no comment)");
-        }
+        for (int i = 0; i < n; i++)
+            cliPrintf("[%s] %s\n", keyField(i, "id").c_str(), keyField(i, "label").c_str());
         return;
     }
 
     if (strncmp(a, "add ", 4) == 0) {
         const char* line = a + 4;
         while (*line == ' ') line++;
-        if (!keyTypeOk(line)) {
-            cliPrintf("only ssh-ed25519 keys are accepted\n");
-            return;
-        }
-        int n = keyCount();
-        char k[64]; snprintf(k, sizeof(k), "s.sshd.authorized_keys.%d", n);
-        storageSet(k, line);
-        cliPrintf("added at index %d\n", n);
+        keyAdd(line);
+        std::string why = storageGetStr("sshd.key.error", "");
+        if (why.empty()) cliPrintf("added as [%s]\n", keyField(keyCount() - 1, "id").c_str());
+        else             cliPrintf("%s\n", why.c_str());
         return;
     }
 
     if (strncmp(a, "del ", 4) == 0) {
-        int idx = atoi(a + 4);
-        int n = keyCount();
-        if (idx < 0 || idx >= n) { cliPrintf("index out of range (0..%d)\n", n - 1); return; }
-        /* Shift entries [idx+1, n-1] down by one, then drop the tail. One
-         * transaction so subscribers see the array land in its final shape. */
-        storageBegin();
-        for (int i = idx; i < n - 1; i++) {
-            char src[64], dst[64];
-            snprintf(src, sizeof(src), "s.sshd.authorized_keys.%d", i + 1);
-            snprintf(dst, sizeof(dst), "s.sshd.authorized_keys.%d", i);
-            storageSet(dst, storageGetStr(src, "").c_str());
-        }
-        char tail[64];
-        snprintf(tail, sizeof(tail), "s.sshd.authorized_keys.%d", n - 1);
-        storageUnset(tail);
-        storageEnd();
-        cliPrintf("removed index %d (%d remain)\n", idx, n - 1);
+        const char* id = a + 4;
+        while (*id == ' ') id++;
+        keyRemove(id);
+        std::string why = storageGetStr("sshd.key.error", "");
+        if (why.empty()) cliPrintf("removed [%s] (%d remain)\n", id, keyCount());
+        else             cliPrintf("%s\n", why.c_str());
         return;
     }
 
@@ -424,6 +579,14 @@ void SshdService::onInit() {
         storageSet("s.sshd.version", SSHD_VERSION);
         storageEnd();
     }
+
+    /* The key store is per-field objects now; move any older device's flat
+     * array over before anything reads it. */
+    keyMigrate();
+
+    /* The settings collection mutates the store only through these. */
+    storageSubscribeChanges("sshd.key.add",    keySentinel);
+    storageSubscribeChanges("sshd.key.remove", keySentinel);
 
     /* Advertise ssh over mDNS (net owns the mechanism; we own this entry). The
      * value is the port's config key, not a literal, so the advertisement

@@ -12,8 +12,9 @@ both roles, against the platform's crypto. There is no SSH library underneath.
 - **Server** (`sshd.cpp` + `sshd_session.cpp`) — a TCP listener, a per-session
   transport/KEX/userauth/connection state machine, and a hard-wired bridge from
   the single session channel to the `cli` or `log` ITS services. Host key in
-  `secrets.sshd.host_seed`, authorized keys in `s.sshd.authorized_keys[]`,
-  password auth delegated to spangap-core `auth`.
+  `secrets.sshd.host_seed`, authorized keys in `s.sshd.authorized_keys[]` (one
+  object per key: `{ id, line, label }`), password auth delegated to
+  spangap-core `auth`.
 - **Client** (`ssh_client.cpp`) — a role-reversed mirror of the server state
   machine that dials out, verifies the server host key (trust-on-first-use
   `known_hosts`), authenticates as a user, and runs a remote command or
@@ -106,9 +107,19 @@ and log are the servers, with their own slots and callbacks.
 
 ### Authentication
 
-`authorized_pub_matches` decodes each `s.sshd.authorized_keys[]` entry's blob
+`authorized_pub_matches` decodes each `s.sshd.authorized_keys[].line` blob
 (`ssh-string("ssh-ed25519") || ssh-string(pub32)`) and compares the raw 32-byte
-key. Publickey auth proceeds in two steps: a probe (no signature →
+key. The store is per-field objects because the settings collection binds it:
+`line` is what this compares, `label` the finished row text, and `id` the small
+opaque number the collection addresses an entry by (the array compacts on
+delete, so an index would name a different key afterwards). `keyMigrate()`
+moves a store written as bare strings over, once, on boot.
+
+Every mutation arrives on `sshd.key.add` / `.remove` and is validated by
+`keyRejection()` — "only ssh-ed25519", "not valid base64", "too short for
+ed25519", "already authorized" — whose verdict reaches the operator as text on
+`sshd.key.error`. The CLI's `sshd add` goes through the same function, so there
+is exactly one statement of what an acceptable key is. Publickey auth proceeds in two steps: a probe (no signature →
 `USERAUTH_PK_OK` if the key is authorized) then a signed request verified over
 the spec's signed-data assembly (session id, request type, user, service,
 `"publickey"`, true, algorithm, pk blob).

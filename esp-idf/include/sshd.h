@@ -23,7 +23,9 @@
  *   s.sshd.enabled            (bool)   master switch (default on, from settings:)
  *   s.sshd.port               (int)    TCP listen port (default 22)
  *   s.sshd.color/.logcolor    (bool)   ANSI color on the cli/log streams (default off)
- *   s.sshd.authorized_keys[]  (string[]) one openssh-format pubkey per entry
+ *   s.sshd.authorized_keys[]  one object per key: { id, line, label } — `line`
+ *                             is the openssh-format pubkey the auth path compares,
+ *                             `label` the finished row text a settings surface shows
  *                                       (`ssh-ed25519 AAAA… optional-comment`)
  *   secrets.sshd.host_seed    (string) 32-byte Ed25519 seed, base64
  *   (password auth is delegated to spangap-core auth, realm "admin")
@@ -33,7 +35,7 @@
  *   sshd enable | disable     start/stop the server
  *   sshd fingerprint          SHA256:base64 of the host Ed25519 pubkey
  *   sshd keys                 list authorized keys (index + comment + fp)
- *   sshd add <key>            append one pubkey to s.sshd.authorized_keys
+ *   sshd add <key>            append one pubkey (validated; see keyRejection)
  *   sshd del <idx>            remove pubkey at index
  *   sshd reset                force-close all active sessions
  *   sshd-keygen / sshd-showkey   regenerate / print the host key (top-level)
