@@ -232,7 +232,7 @@ a password interactively.
 
 ## Settings UI
 
-The server contributes a settings pane (Settings → Internet → SSH) with the
+The server contributes a settings pane (Settings → WiFi & Network → SSH) with the
 authorized-keys editor, described by the `settings:` block in `straddle.yaml`
 and lowered to both surfaces. The key list is a collection: `sshd.cpp` owns
 every mutation through the `sshd.key.*` sentinels and validates there — "only

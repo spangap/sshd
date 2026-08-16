@@ -28,7 +28,7 @@ services:
 # default: sshd never admits anyone without an authorized key, so listening is safe.
 settings:
   - at:
-      - { id: network, label: "Internet", order: 2 }
+      - { id: net }
       - { id: ssh, label: "SSH", short: "SSH" }
     rows:
       - section: "SSH server"
