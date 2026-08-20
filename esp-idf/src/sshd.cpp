@@ -140,7 +140,6 @@ int onTcpConnect(int handle, const void* /*data*/, size_t /*len*/) {
     }
     s_slotInUse[slot] = true;
     sshdses::session_open(s_sessions[slot], handle, slot);
-    info("sshd: connection accepted on slot %d", slot);
     return slot;
 }
 

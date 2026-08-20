@@ -573,7 +573,6 @@ static bool consume_version(Session& s) {
         send_disconnect(s, 2, "SSH protocol version must be 2.0");
         return false;
     }
-    info("sshd: peer version: %s", s.peerVersion.c_str());
     send_our_kexinit(s);
     s.phase = Phase::KEX_WAIT_KEXINIT;
     return true;
@@ -588,9 +587,6 @@ static void handle_kexinit(Session& s, const std::string& payload) {
         send_disconnect(s, 3, "no common KEX algorithm");
         return;
     }
-    info("sshd: KEX %s",
-         s.kexAlg == KexAlg::MLKEM768_X25519 ? "mlkem768x25519-sha256"
-                                             : "curve25519-sha256");
     s.phase = Phase::KEX_WAIT_ECDH;
 }
 
@@ -996,6 +992,21 @@ static bool handle_channel_open(Session& s, const std::string& payload) {
     return true;
 }
 
+static const char* kex_name(const Session& s) {
+    return s.kexAlg == KexAlg::MLKEM768_X25519 ? "mlkem768x25519-sha256"
+                                               : "curve25519-sha256";
+}
+
+/* One line per established session; cmd is non-null for exec ("one-hot"). */
+static void log_accepted(const Session& s, int sessionSlot,
+                         const uint8_t* cmd, size_t cmdLen) {
+    if (cmd) info("sshd: accepted (%d), peer '%s', KEX %s, cmd: %.*s",
+                  sessionSlot, s.peerVersion.c_str(), kex_name(s),
+                  (int)cmdLen, (const char*)cmd);
+    else     info("sshd: accepted (%d), peer '%s', KEX %s",
+                  sessionSlot, s.peerVersion.c_str(), kex_name(s));
+}
+
 static bool handle_channel_request(Session& s, const std::string& payload, int sessionSlot) {
     View v = view_init(payload.data(), payload.size());
     uint32_t recipient = get_u32(v);
@@ -1017,6 +1028,7 @@ static bool handle_channel_request(Session& s, const std::string& payload, int s
     if (typeLen == 5 && memcmp(typeStr, "shell", 5) == 0) {
         s.chanKind = ChanKind::CLI;
         if (!open_backend(s, sessionSlot)) { reply(false); return true; }
+        log_accepted(s, sessionSlot, nullptr, 0);
         reply(true);
         return true;
     }
@@ -1030,6 +1042,7 @@ static bool handle_channel_request(Session& s, const std::string& payload, int s
         if (cmdLen > 256) { reply(false); return true; }
         s.chanKind = ChanKind::CLI;
         if (!open_backend_line(s, sessionSlot)) { reply(false); return true; }
+        log_accepted(s, sessionSlot, cmd, cmdLen);
         reply(true);
         char line[260];
         memcpy(line, cmd, cmdLen);
@@ -1044,6 +1057,7 @@ static bool handle_channel_request(Session& s, const std::string& payload, int s
         if (subLen == 3 && memcmp(sub, "log", 3) == 0) {
             s.chanKind = ChanKind::LOG;
             if (!open_backend(s, sessionSlot)) { reply(false); return true; }
+            log_accepted(s, sessionSlot, nullptr, 0);
             reply(true);
             return true;
         }
