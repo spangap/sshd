@@ -29,10 +29,11 @@ services:
 settings:
   - at:
       - { id: net }
-      - { id: ssh, label: "SSH", short: "SSH" }
+      - { id: ssh, label: "SSH", short: "SSH", order: 3 }
     rows:
-      - section: "SSH server"
-      - switch: { label: "Enabled", key: "s.sshd.enabled", default: 1 }
+      - title: "SSH"
+      - heading: "SSH server"
+      - switch: { label: "Enable SSH", key: "s.sshd.enabled", default: 1 }
       # The key store is an array of per-field objects; sshd.cpp owns every
       # mutation through the sshd.key.* sentinels and validates there, so a
       # rejected key comes back as a sentence rather than as a UI rule.
