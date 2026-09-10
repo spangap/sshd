@@ -23,7 +23,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "esp_random.h"
+#include "random.h"
 #include "esp_system.h"
 #include "mbedtls/base64.h"
 
@@ -83,7 +83,7 @@ bool loadHostSeed(uint8_t seed[32]) {
 
 void generateHostSeed() {
     uint8_t seed[32];
-    esp_fill_random(seed, sizeof(seed));
+    randomBytes(seed, sizeof(seed));
     char b64[64];
     if (!b64Encode(seed, sizeof(seed), b64, sizeof(b64))) {
         err("sshd: base64 encode of host seed failed");
@@ -485,7 +485,7 @@ void cmdSshdKeygen(const char* a) {
         return;
     }
     uint8_t seed[32];
-    esp_fill_random(seed, sizeof(seed));
+    randomBytes(seed, sizeof(seed));
     char b64[64];
     if (!b64Encode(seed, sizeof(seed), b64, sizeof(b64))) { cliPrintf("sshd-keygen: encode failed\n"); return; }
     storageSet("secrets.sshd.host_seed", b64);

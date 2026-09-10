@@ -21,7 +21,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
-#include "esp_random.h"
+#include "random.h"
 
 #include <cstring>
 #include <cstdio>
@@ -152,7 +152,7 @@ static void send_packet(Session& s, const std::string& payload) {
     inner.push_back((char)pad);
     inner.append(payload);
     uint8_t padBytes[256] = {};
-    esp_fill_random(padBytes, pad);
+    randomBytes(padBytes, pad);
     inner.append((const char*)padBytes, pad);
 
     if (s.encOutbound) {
@@ -304,7 +304,7 @@ static void build_kexinit_payload(std::string& out) {
     put_u8(out, MSG_KEXINIT);
     /* 16-byte cookie */
     uint8_t cookie[16];
-    esp_fill_random(cookie, 16);
+    randomBytes(cookie, 16);
     out.append((const char*)cookie, 16);
     /* algorithm name-lists */
     put_namelist(out, OUR_KEX_NAMES);
@@ -397,7 +397,7 @@ static bool load_host_key(uint8_t seedOut[32], uint8_t hostPubOut[32]) {
 /* Classical curve25519-sha256: compute X25519 ephemeral, set sharedK to the
  * raw X25519 result. Requires s.peerEphPub to already be set. */
 static bool kex_compute_classical(Session& s) {
-    esp_fill_random(s.ephPriv, 32);
+    randomBytes(s.ephPriv, 32);
     if (!sshdcrypto::x25519_base(s.ephPriv, s.ephPub)) {
         err("sshd: x25519 base failed"); return false;
     }
@@ -425,7 +425,7 @@ static bool kex_compute_pq(Session& s) {
         err("sshd: mlkem768 encap failed (bad pk?)"); return false;
     }
 
-    esp_fill_random(s.ephPriv, 32);
+    randomBytes(s.ephPriv, 32);
     if (!sshdcrypto::x25519_base(s.ephPriv, s.ephPub)) {
         err("sshd: x25519 base failed"); return false;
     }

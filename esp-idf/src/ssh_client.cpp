@@ -29,7 +29,7 @@
 #include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
 #include "mbedtls/base64.h"
-#include "esp_random.h"
+#include "random.h"
 
 #include <cstring>
 #include <cstdio>
@@ -199,7 +199,7 @@ static void send_packet(Csess& cs, const std::string& payload) {
     inner.push_back((char)pad);
     inner.append(payload);
     uint8_t padBytes[256] = {};
-    esp_fill_random(padBytes, pad);
+    randomBytes(padBytes, pad);
     inner.append((const char*)padBytes, pad);
 
     std::string framed;
@@ -357,7 +357,7 @@ static void derive_key(Csess& cs, char letter, uint8_t* out, size_t outLen) {
 
 static void put_kexinit(std::string& out) {
     put_u8(out, MSG_KEXINIT);
-    uint8_t cookie[16]; esp_fill_random(cookie, 16);
+    uint8_t cookie[16]; randomBytes(cookie, 16);
     out.append((const char*)cookie, 16);
     put_namelist(out, "curve25519-sha256,curve25519-sha256@libssh.org");
     put_namelist(out, "ssh-ed25519");
@@ -498,7 +498,7 @@ static bool do_kex(Csess& cs) {
     if (!check_kexinit(pkt, e, sizeof(e))) return fail(cs.job, e);
 
     /* KEX_ECDH_INIT: our ephemeral X25519 public */
-    esp_fill_random(cs.ephPriv, 32);
+    randomBytes(cs.ephPriv, 32);
     if (!sshdcrypto::x25519_base(cs.ephPriv, cs.ephPub)) return fail(cs.job, "x25519 base failed");
     {
         std::string p;
@@ -1239,7 +1239,7 @@ static void cmd_ssh_keygen(const char* a) {
                   CLI_HELP_COL, "ssh-keygen");
         return;
     }
-    uint8_t seed[32]; esp_fill_random(seed, sizeof(seed));
+    uint8_t seed[32]; randomBytes(seed, sizeof(seed));
     char b64[64]; size_t w = 0;
     if (mbedtls_base64_encode((unsigned char*)b64, sizeof(b64), &w, seed, sizeof(seed)) != 0) {
         cliPrintf("ssh-keygen: base64 failed\n"); return;

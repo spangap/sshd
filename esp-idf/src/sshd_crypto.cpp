@@ -20,7 +20,7 @@
 #include "mbedtls/bignum.h"
 #include "mbedtls/base64.h"
 
-#include "esp_random.h"
+#include "random.h"
 
 /* Vendored Ed25519 (orlp/ed25519, zlib license — see src/orlp_ed25519/LICENSE.txt). */
 extern "C" {
@@ -34,18 +34,18 @@ extern "C" {
 #include "mlkem_native.h"
 
 /* mlkem-native requires the embedder to provide randombytes(). Forward to
- * esp_fill_random(), which is a CSPRNG seeded by hardware once Wi-Fi/BT is
- * up. Returns 0 on success. */
+ * spangap-core's DRBG (randomBytes, seeded at boot inside an entropy-source
+ * window; see spangap-core/docs/random.md). Returns 0 on success. */
 int randombytes(uint8_t* out, size_t outLen) {
-    esp_fill_random(out, outLen);
+    randomBytes(out, outLen);
     return 0;
 }
 }
 
 namespace sshdcrypto {
 
-static int esp_fill_random_wrapper(void* /*ctx*/, unsigned char* buf, size_t len) {
-    esp_fill_random(buf, len);
+static int drbg_random_wrapper(void* /*ctx*/, unsigned char* buf, size_t len) {
+    randomBytes(buf, len);
     return 0;
 }
 
@@ -126,7 +126,7 @@ static bool x25519_compute(const uint8_t scalar[32], const uint8_t* point /*32 o
         if (mbedtls_mpi_lset(&P.Z, 1) != 0) goto out;
     }
 
-    if (mbedtls_ecp_mul(&grp, &R, &s, &P, esp_fill_random_wrapper, nullptr) != 0) goto out;
+    if (mbedtls_ecp_mul(&grp, &R, &s, &P, drbg_random_wrapper, nullptr) != 0) goto out;
 
     {
         uint8_t r_be[32];

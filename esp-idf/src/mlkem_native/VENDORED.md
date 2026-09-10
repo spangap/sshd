@@ -35,7 +35,8 @@ Configured for **ML-KEM-768 only** via the default
 only level we use on the wire (`mlkem768x25519-sha256`).
 
 `randombytes()` (declared in `src/randombytes.h`) is supplied by us in
-`../sshd_crypto.cpp` and forwarded to `esp_fill_random()`.
+`../sshd_crypto.cpp` and forwarded to spangap-core's `randomBytes()` (the
+boot-seeded DRBG, see spangap-core/docs/random.md).
 
 ## Updating
 

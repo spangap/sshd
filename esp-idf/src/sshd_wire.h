@@ -67,8 +67,10 @@ inline View view_init(const void* data, size_t len) {
     return { (const uint8_t*)data, len, 0, false };
 }
 
+/* n is peer-supplied (a uint32 length field); size_t is 32-bit on the target,
+ * so `v.pos + n` can wrap. Compare against the remaining bytes instead. */
 inline bool need(View& v, size_t n) {
-    if (v.bad || v.pos + n > v.n) { v.bad = true; return false; }
+    if (v.bad || v.pos > v.n || n > v.n - v.pos) { v.bad = true; return false; }
     return true;
 }
 
